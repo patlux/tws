@@ -50,7 +50,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
         StatusContext::Finder => &[("Enter", "attach"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
         StatusContext::ThreadPicker => &[("Enter", "move"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
-        StatusContext::AgentsView => &[("j/k", "navigate"), ("Enter", "attach"), ("v", "tree view"), ("q", "quit")],
+        StatusContext::AgentsView => &[("j/k", "navigate"), ("Enter", "attach"), ("p", "pin"), ("0-9", "jump"), ("\u{21e7}0-9", "set slot"), ("v", "tree view"), ("q", "quit")],
     };
 
     // Left side: flash message (if active) or key hints
