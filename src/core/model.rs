@@ -60,6 +60,9 @@ pub struct AgentSession {
     pub pane_title: String,
     pub display_name: String,
     pub renamed: bool,
+    /// Pin slot 0..=9 if this agent is pinned, None otherwise.
+    /// Runtime-only, dies with the pane.
+    pub pin_slot: Option<u8>,
 }
 
 impl Collection {
