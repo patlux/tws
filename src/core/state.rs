@@ -24,6 +24,7 @@ pub struct FlatAgent {
     pub tmux_session_name: String,
     pub window_index: u32,
     pub pane_id: String,
+    pub pin_slot: Option<u8>,
 }
 
 /// What the current tree selection points to.
@@ -512,11 +513,17 @@ impl AppState {
                             tmux_session_name: agent.tmux_session_name.clone(),
                             window_index: agent.window_index,
                             pane_id: agent.pane_id.clone(),
+                            pin_slot: agent.pin_slot,
                         });
                     }
                 }
             }
         }
+        // Pinned agents first, by slot ascending; unpinned keep original tree order.
+        result.sort_by_key(|a| match a.pin_slot {
+            Some(slot) => (0u8, slot),
+            None => (1u8, 0u8),
+        });
         result
     }
 }
@@ -1075,5 +1082,32 @@ mod tests {
         assert_eq!(recent2.len(), 2);
         assert_eq!(recent2[0].display_name, "hotfix");
         assert_eq!(recent2[1].display_name, "main");
+    }
+
+    #[test]
+    fn all_agents_flat_sorts_pinned_first_with_gaps_preserved() {
+        let mut state = AppState::with_sample_data();
+        let live = vec![("tws_work_edge-device-pipeline_one".to_string(), 0)];
+        state.refresh_sessions(&live);
+
+        use crate::core::model::{AgentSession, AgentType};
+        let mk = |id: &str, slot: Option<u8>| AgentSession {
+            agent_type: AgentType::ClaudeCode,
+            tmux_session_name: "tws_work_edge-device-pipeline_one".into(),
+            window_index: 0,
+            pane_id: id.into(),
+            pane_title: String::new(),
+            display_name: id.into(),
+            renamed: false,
+            pin_slot: slot,
+        };
+        state.agent_sessions.push(mk("%a", None));
+        state.agent_sessions.push(mk("%b", Some(3)));
+        state.agent_sessions.push(mk("%c", Some(0)));
+        state.agent_sessions.push(mk("%d", None));
+
+        let flat = state.all_agents_flat();
+        let ids: Vec<&str> = flat.iter().map(|f| f.pane_id.as_str()).collect();
+        assert_eq!(ids, vec!["%c", "%b", "%a", "%d"]);
     }
 }
