@@ -204,6 +204,91 @@ impl AppState {
         }
     }
 
+    /// Pin the agent identified by pane_id to the lowest free slot 0..=9.
+    /// Returns the assigned slot, or None if all 10 slots are taken.
+    /// If the agent is already pinned, returns its existing slot.
+    pub fn pin_agent_auto(&mut self, pane_id: &str) -> Option<u8> {
+        if let Some(slot) = self
+            .agent_sessions
+            .iter()
+            .find(|a| a.pane_id == pane_id)
+            .and_then(|a| a.pin_slot)
+        {
+            return Some(slot);
+        }
+        let used: std::collections::HashSet<u8> = self
+            .agent_sessions
+            .iter()
+            .filter_map(|a| a.pin_slot)
+            .collect();
+        let slot = (0u8..=9).find(|s| !used.contains(s))?;
+        if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == pane_id) {
+            agent.pin_slot = Some(slot);
+            Some(slot)
+        } else {
+            None
+        }
+    }
+
+    /// Pin (or repin) the agent identified by pane_id to the given slot (0..=9).
+    ///
+    /// - If the agent already holds this slot, no-op.
+    /// - If the slot is currently held by another agent X:
+    ///     - If the moving agent was already pinned (slot Y), the two agents swap slots.
+    ///     - If the moving agent was unpinned, X is re-auto-pinned to the lowest free slot.
+    ///
+    /// Slot values outside 0..=9 are clamped to 9.
+    pub fn pin_agent_to(&mut self, pane_id: &str, slot: u8) {
+        let slot = slot.min(9);
+
+        let moving_existing = self
+            .agent_sessions
+            .iter()
+            .find(|a| a.pane_id == pane_id)
+            .and_then(|a| a.pin_slot);
+
+        if moving_existing == Some(slot) {
+            return;
+        }
+
+        let occupant_pane_id: Option<String> = self
+            .agent_sessions
+            .iter()
+            .find(|a| a.pin_slot == Some(slot))
+            .map(|a| a.pane_id.clone());
+
+        if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == pane_id) {
+            agent.pin_slot = Some(slot);
+        } else {
+            return;
+        }
+
+        if let Some(occupant_id) = occupant_pane_id {
+            if let Some(prev_slot) = moving_existing {
+                if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == occupant_id) {
+                    agent.pin_slot = Some(prev_slot);
+                }
+            } else {
+                if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == occupant_id) {
+                    agent.pin_slot = None;
+                }
+                self.pin_agent_auto(&occupant_id);
+            }
+        }
+    }
+
+    /// Unpin the agent identified by pane_id. No-op if not pinned or not found.
+    pub fn unpin_agent(&mut self, pane_id: &str) {
+        if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == pane_id) {
+            agent.pin_slot = None;
+        }
+    }
+
+    /// Look up which agent (if any) currently holds the given pin slot.
+    pub fn agent_by_pin_slot(&self, slot: u8) -> Option<&AgentSession> {
+        self.agent_sessions.iter().find(|a| a.pin_slot == Some(slot))
+    }
+
     /// Get all agents detected in a given tmux session.
     pub fn agents_for_session(&self, tmux_session_name: &str) -> Vec<&AgentSession> {
         self.agent_sessions
@@ -822,6 +907,147 @@ mod tests {
         let live = vec![("twsr_general".to_string(), 0)];
         state.refresh_sessions(&live);
         assert!(state.active_sessions.is_empty());
+    }
+
+    fn make_agent(pane_id: &str) -> super::AgentSession {
+        use super::super::model::{AgentSession, AgentType};
+        AgentSession {
+            agent_type: AgentType::ClaudeCode,
+            tmux_session_name: "tws_x_y_a".into(),
+            window_index: 0,
+            pane_id: pane_id.into(),
+            pane_title: String::new(),
+            display_name: "claude".into(),
+            renamed: false,
+            pin_slot: None,
+        }
+    }
+
+    #[test]
+    fn pin_agent_auto_returns_slot_zero_on_first_pin() {
+        let mut state = AppState::new();
+        state.agent_sessions.push(make_agent("%1"));
+        assert_eq!(state.pin_agent_auto("%1"), Some(0));
+        assert_eq!(state.agent_sessions[0].pin_slot, Some(0));
+    }
+
+    #[test]
+    fn agent_by_pin_slot_returns_correct_agent() {
+        let mut state = AppState::new();
+        let mut a = make_agent("%1");
+        a.pin_slot = Some(0);
+        let mut b = make_agent("%2");
+        b.pin_slot = Some(7);
+        state.agent_sessions.push(a);
+        state.agent_sessions.push(b);
+
+        assert_eq!(state.agent_by_pin_slot(0).unwrap().pane_id, "%1");
+        assert_eq!(state.agent_by_pin_slot(7).unwrap().pane_id, "%2");
+        assert!(state.agent_by_pin_slot(3).is_none());
+    }
+
+    #[test]
+    fn pin_agent_to_empty_slot_assigns() {
+        let mut state = AppState::new();
+        state.agent_sessions.push(make_agent("%1"));
+        state.pin_agent_to("%1", 3);
+        assert_eq!(state.agent_sessions[0].pin_slot, Some(3));
+    }
+
+    #[test]
+    fn pin_agent_to_same_slot_is_noop() {
+        let mut state = AppState::new();
+        let mut a = make_agent("%1");
+        a.pin_slot = Some(3);
+        state.agent_sessions.push(a);
+        state.pin_agent_to("%1", 3);
+        assert_eq!(state.agent_sessions[0].pin_slot, Some(3));
+    }
+
+    #[test]
+    fn pin_agent_to_both_pinned_swaps_slots() {
+        let mut state = AppState::new();
+        let mut a = make_agent("%1");
+        a.pin_slot = Some(2);
+        let mut b = make_agent("%2");
+        b.pin_slot = Some(5);
+        state.agent_sessions.push(a);
+        state.agent_sessions.push(b);
+
+        state.pin_agent_to("%2", 2);
+        assert_eq!(state.agent_sessions[0].pin_slot, Some(5));
+        assert_eq!(state.agent_sessions[1].pin_slot, Some(2));
+    }
+
+    #[test]
+    fn pin_agent_to_unpinned_into_occupied_re_auto_pins_occupant() {
+        let mut state = AppState::new();
+        for (i, slot) in [(1u32, 0u8), (2, 1), (3, 3)] {
+            let mut a = make_agent(&format!("%{}", i));
+            a.pin_slot = Some(slot);
+            state.agent_sessions.push(a);
+        }
+        state.agent_sessions.push(make_agent("%4"));
+        state.pin_agent_to("%4", 1);
+
+        let by_id = |id: &str| {
+            state.agent_sessions.iter().find(|a| a.pane_id == id).unwrap().pin_slot
+        };
+        assert_eq!(by_id("%4"), Some(1));
+        assert_eq!(by_id("%2"), Some(2));
+    }
+
+    #[test]
+    fn unpin_agent_clears_slot() {
+        let mut state = AppState::new();
+        let mut a = make_agent("%1");
+        a.pin_slot = Some(3);
+        state.agent_sessions.push(a);
+        state.unpin_agent("%1");
+        assert_eq!(state.agent_sessions[0].pin_slot, None);
+    }
+
+    #[test]
+    fn unpin_agent_noop_when_not_pinned() {
+        let mut state = AppState::new();
+        state.agent_sessions.push(make_agent("%1"));
+        state.unpin_agent("%1");
+        assert_eq!(state.agent_sessions[0].pin_slot, None);
+    }
+
+    #[test]
+    fn pin_agent_auto_picks_lowest_free_slot() {
+        let mut state = AppState::new();
+        state.agent_sessions.push(make_agent("%1"));
+        state.agent_sessions.push(make_agent("%2"));
+        state.agent_sessions.push(make_agent("%3"));
+        state.agent_sessions[0].pin_slot = Some(0);
+        state.agent_sessions[1].pin_slot = Some(1);
+        state.agent_sessions[2].pin_slot = Some(3);
+        state.agent_sessions.push(make_agent("%4"));
+        assert_eq!(state.pin_agent_auto("%4"), Some(2));
+    }
+
+    #[test]
+    fn pin_agent_auto_returns_none_when_full() {
+        let mut state = AppState::new();
+        for i in 0..10 {
+            let mut a = make_agent(&format!("%{}", i));
+            a.pin_slot = Some(i as u8);
+            state.agent_sessions.push(a);
+        }
+        state.agent_sessions.push(make_agent("%11"));
+        assert_eq!(state.pin_agent_auto("%11"), None);
+        assert_eq!(state.agent_sessions.last().unwrap().pin_slot, None);
+    }
+
+    #[test]
+    fn pin_agent_auto_idempotent_for_already_pinned() {
+        let mut state = AppState::new();
+        let mut a = make_agent("%1");
+        a.pin_slot = Some(5);
+        state.agent_sessions.push(a);
+        assert_eq!(state.pin_agent_auto("%1"), Some(5));
     }
 
     #[test]
