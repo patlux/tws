@@ -573,7 +573,7 @@ impl App {
 
         // In agents mode, route all keys there (bypasses tree/notes focus logic)
         if matches!(self.view_mode, ViewMode::Agents) {
-            return self.handle_agents_view_key(code, terminal);
+            return self.handle_agents_view_key(code, modifiers, terminal);
         }
 
         // Focus switching: Tab toggles, Ctrl+Arrow for directional switch
@@ -669,8 +669,19 @@ impl App {
         Ok(())
     }
 
-    fn handle_agents_view_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
+    fn handle_agents_view_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         let agents = self.state.all_agents_flat();
+        let shift = modifiers.contains(KeyModifiers::SHIFT);
+
+        let current_pane_id = agents
+            .get(self.agent_list_cursor)
+            .map(|a| a.pane_id.clone());
+
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if !agents.is_empty() {
@@ -694,9 +705,77 @@ impl App {
             KeyCode::Char('q') => {
                 self.running = false;
             }
+            // Shift+digit → manual pin/repin to slot
+            KeyCode::Char(c) if shift && c.is_ascii_digit() => {
+                let slot: u8 = c.to_digit(10).unwrap() as u8;
+                if let Some(pane_id) = current_pane_id.clone() {
+                    self.state.pin_agent_to(&pane_id, slot);
+                    let path = self
+                        .state
+                        .agent_sessions
+                        .iter()
+                        .find(|a| a.pane_id == pane_id)
+                        .map(|a| format!("{} / {}", a.tmux_session_name, a.display_name));
+                    if let Some(p) = path {
+                        self.set_flash(&format!("Pin {}: {}", slot, p));
+                    }
+                    self.reanchor_agent_cursor(current_pane_id);
+                }
+            }
+            // Plain digit → jump to slot
+            KeyCode::Char(c) if !shift && c.is_ascii_digit() => {
+                let slot: u8 = c.to_digit(10).unwrap() as u8;
+                if let Some(agent) = self.state.agent_by_pin_slot(slot) {
+                    let target_id = agent.pane_id.clone();
+                    let new_agents = self.state.all_agents_flat();
+                    if let Some(idx) = new_agents.iter().position(|a| a.pane_id == target_id) {
+                        self.agent_list_cursor = idx;
+                    }
+                }
+            }
+            // `p` → toggle pin
+            KeyCode::Char('p') => {
+                if let Some(pane_id) = current_pane_id.clone() {
+                    let already_pinned = self
+                        .state
+                        .agent_sessions
+                        .iter()
+                        .find(|a| a.pane_id == pane_id)
+                        .and_then(|a| a.pin_slot)
+                        .is_some();
+
+                    if already_pinned {
+                        self.state.unpin_agent(&pane_id);
+                        self.set_flash("Unpinned");
+                    } else {
+                        match self.state.pin_agent_auto(&pane_id) {
+                            Some(slot) => self.set_flash(&format!("Pinned to slot {}", slot)),
+                            None => self.set_flash("Max 10 pins reached"),
+                        }
+                    }
+                    self.reanchor_agent_cursor(current_pane_id);
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Re-anchor `agent_list_cursor` to the agent with the given `pane_id`,
+    /// falling back to clamping in range if the agent is no longer in the flat list.
+    fn reanchor_agent_cursor(&mut self, anchor_pane_id: Option<String>) {
+        let agents = self.state.all_agents_flat();
+        if agents.is_empty() {
+            self.agent_list_cursor = 0;
+            return;
+        }
+        if let Some(id) = anchor_pane_id {
+            if let Some(idx) = agents.iter().position(|a| a.pane_id == id) {
+                self.agent_list_cursor = idx;
+                return;
+            }
+        }
+        self.agent_list_cursor = self.agent_list_cursor.min(agents.len() - 1);
     }
 
     /// Resolve the currently selected item accounting for the active view mode.
