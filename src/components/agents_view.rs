@@ -18,24 +18,47 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
         return;
     }
 
-    let items: Vec<ListItem> = agents
-        .iter()
-        .map(|a| {
-            let line = Line::from(vec![
-                Span::raw("  "),
-                Span::styled(a.thread_name.as_str(), theme::THREAD_STYLE),
-                Span::styled(" : ", theme::BADGE_DOT_STYLE),
-                Span::styled(a.session_display_name.as_str(), theme::SESSION_STYLE),
-                Span::styled(" : ", theme::BADGE_DOT_STYLE),
-                Span::styled(a.agent_type.icon(), theme::AGENT_STYLE.add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" {}", a.agent_display_name), theme::AGENT_STYLE),
-            ]);
-            ListItem::new(line)
-        })
-        .collect();
+    // The flat list is already sorted: pinned first, then unpinned.
+    // Find the split point: index of the first unpinned agent.
+    let split = agents.iter().position(|a| a.pin_slot.is_none()).unwrap_or(agents.len());
+    let has_pinned = split > 0;
+    let has_unpinned = split < agents.len();
+
+    let agent_to_item = |a: &FlatAgent| -> ListItem<'static> {
+        let badge: Span = match a.pin_slot {
+            Some(slot) => Span::styled(format!("[{}] ", slot), theme::PIN_BADGE_STYLE),
+            None => Span::raw("    "),
+        };
+        let line = Line::from(vec![
+            badge,
+            Span::styled(a.thread_name.clone(), theme::THREAD_STYLE),
+            Span::styled(" : ", theme::BADGE_DOT_STYLE),
+            Span::styled(a.session_display_name.clone(), theme::SESSION_STYLE),
+            Span::styled(" : ", theme::BADGE_DOT_STYLE),
+            Span::styled(a.agent_type.icon().to_string(), theme::AGENT_STYLE.add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {}", a.agent_display_name), theme::AGENT_STYLE),
+        ]);
+        ListItem::new(line)
+    };
+
+    let mut items: Vec<ListItem<'static>> = Vec::with_capacity(agents.len() + 1);
+    let mut adjusted_cursor = cursor;
+
+    for (idx, agent) in agents.iter().enumerate() {
+        if idx == split && has_pinned && has_unpinned {
+            // Insert separator row between pinned and unpinned blocks
+            let sep_width = area.width.saturating_sub(2) as usize;
+            let sep = "─".repeat(sep_width);
+            items.push(ListItem::new(Line::from(Span::styled(sep, theme::SEPARATOR_STYLE))));
+            if cursor >= split {
+                adjusted_cursor = cursor + 1;
+            }
+        }
+        items.push(agent_to_item(agent));
+    }
 
     let mut list_state = ListState::default();
-    list_state.select(Some(cursor));
+    list_state.select(Some(adjusted_cursor));
 
     let list = List::new(items).highlight_style(theme::HIGHLIGHT_STYLE);
     frame.render_stateful_widget(list, area, &mut list_state);
