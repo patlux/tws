@@ -15,6 +15,7 @@ use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
+use crate::core::tree_nav::{self, NavNode};
 use crate::event;
 use crate::theme;
 use crate::tmux::agent_scan;
@@ -633,6 +634,28 @@ impl App {
             Focus::Notes => self.handle_notes_key(code, modifiers, terminal)?,
         }
         Ok(())
+    }
+
+    /// Build the list of currently-visible tree nodes reduced to navigation data.
+    /// Reads `state` + `tree_state` immutably; returns owned data so callers can
+    /// then mutate `tree_state` without a borrow conflict.
+    fn nav_nodes(&self) -> Vec<NavNode> {
+        let items = tree_view::build_tree_items(&self.state);
+        self.tree_state
+            .flatten(&items)
+            .iter()
+            .map(|flat| {
+                let path = flat.identifier.clone();
+                let category =
+                    tree_nav::category_discriminant(&self.state.resolve_selection(&path))
+                        .unwrap_or(u8::MAX);
+                NavNode {
+                    path,
+                    category,
+                    has_children: !flat.item.children().is_empty(),
+                }
+            })
+            .collect()
     }
 
     fn handle_normal_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
