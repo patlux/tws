@@ -4,7 +4,6 @@ set -euo pipefail
 REPO="ytaskiran/tws"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="tws"
-BIND_LINE='bind-key s display-popup -E -w 100% -h 100% -b none "tws"'
 tmpdir=""
 
 # --- Helpers ---
@@ -147,53 +146,7 @@ configure_path() {
     info "Restart your shell or run: source $rc_file"
 }
 
-# --- 4. Configure tmux ---
-
-configure_tmux() {
-    printf '%s' "Add tws keybinding to tmux.conf? (prefix + s) [y/N] "
-    read -r answer < /dev/tty
-
-    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        info "Skipped. To add manually, put this in your tmux.conf:"
-        echo "  $BIND_LINE"
-        return
-    fi
-
-    # Find tmux.conf
-    local tmux_conf=""
-    if [ -f "$HOME/.config/tmux/tmux.conf" ]; then
-        tmux_conf="$HOME/.config/tmux/tmux.conf"
-    elif [ -f "$HOME/.tmux.conf" ]; then
-        tmux_conf="$HOME/.tmux.conf"
-    else
-        tmux_conf="$HOME/.tmux.conf"
-    fi
-
-    # Check if binding already exists
-    if grep -q '^[^#]*display-popup.*tws' "$tmux_conf" 2>/dev/null; then
-        ok "tws binding already exists in $tmux_conf — skipping"
-        return
-    fi
-
-    # Back up and append
-    if [ -f "$tmux_conf" ]; then
-        cp "$tmux_conf" "${tmux_conf}.bak"
-        info "Backed up $tmux_conf → ${tmux_conf}.bak"
-    fi
-
-    echo "" >> "$tmux_conf"
-    echo "# tws — tmux workspace manager (prefix + s)" >> "$tmux_conf"
-    echo "$BIND_LINE" >> "$tmux_conf"
-
-    # Ensure pre-existing tmux sessions pick up PATH changes
-    if ! grep -q 'update-environment.*PATH' "$tmux_conf" 2>/dev/null; then
-        echo 'set -ga update-environment " PATH"' >> "$tmux_conf"
-    fi
-
-    ok "Added keybinding to $tmux_conf"
-}
-
-# --- 5. Agent hooks (Claude Code + Codex) ---
+# --- 4. Agent hooks (Claude Code + Codex) ---
 
 TRIGGER_CMD="touch \$HOME/.config/tws/agent.trigger"
 HOOK_ENTRY='[{"matcher": "", "hooks": [{"type": "command", "command": "'"$TRIGGER_CMD"'"}]}]'
@@ -241,7 +194,7 @@ configure_codex_feature_flag() {
     local config_file="$HOME/.codex/config.toml"
 
     # Already enabled?
-    if grep -q 'codex_hooks\s*=\s*true' "$config_file" 2>/dev/null; then
+    if grep -q '^\s*hooks\s*=\s*true' "$config_file" 2>/dev/null; then
         return
     fi
 
@@ -249,15 +202,15 @@ configure_codex_feature_flag() {
     tmp="$(mktemp)"
 
     if [ ! -f "$config_file" ]; then
-        printf '[features]\ncodex_hooks = true\n' > "$config_file"
+        printf '[features]\nhooks = true\n' > "$config_file"
     elif grep -q '^\[features\]' "$config_file"; then
-        # [features] section exists — insert codex_hooks = true after the header
-        awk '/^\[features\]/{print; print "codex_hooks = true"; next}1' "$config_file" > "$tmp" && mv "$tmp" "$config_file"
+        # [features] section exists — insert hooks = true after the header
+        awk '/^\[features\]/{print; print "hooks = true"; next}1' "$config_file" > "$tmp" && mv "$tmp" "$config_file"
     else
         # No [features] section — append it
-        printf '\n[features]\ncodex_hooks = true\n' >> "$config_file"
+        printf '\n[features]\nhooks = true\n' >> "$config_file"
     fi
-    ok "Enabled codex_hooks feature in ~/.codex/config.toml"
+    ok "Enabled hooks feature in ~/.codex/config.toml"
 }
 
 configure_codex_hooks() {
@@ -276,7 +229,7 @@ configure_codex_hooks() {
     local hooks_ok=false
     local feature_ok=false
     grep -q 'agent\.trigger' "$hooks_file" 2>/dev/null && hooks_ok=true
-    grep -q 'codex_hooks\s*=\s*true' "$HOME/.codex/config.toml" 2>/dev/null && feature_ok=true
+    grep -q '^\s*hooks\s*=\s*true' "$HOME/.codex/config.toml" 2>/dev/null && feature_ok=true
 
     if $hooks_ok && $feature_ok; then
         ok "Codex agent hooks already configured"
@@ -356,7 +309,6 @@ main() {
     info "Detected platform: $target"
 
     install_binary "$target"
-    configure_tmux
     configure_agent_hooks
     configure_glow
 
@@ -364,7 +316,7 @@ main() {
     ok "Done!"
     echo "  Binary:   $INSTALL_DIR/$BINARY_NAME"
     echo "  Run:      tws"
-    echo "  In tmux:  prefix + s"
+    echo "  Detach:   prefix + d"
     echo ""
 }
 

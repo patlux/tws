@@ -86,4 +86,4 @@ tws              # launch TUI (default)
 tws import       # interactive import of unmanaged tmux sessions
 ```
 
-tmux keybinding setup: `bind-key s display-popup -E -w 100% -h 100% -b none "tws"`
+Detach from a session with `prefix + d` to return to the shell.
