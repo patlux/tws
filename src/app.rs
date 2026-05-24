@@ -138,6 +138,13 @@ pub struct App {
     view_mode: ViewMode,
     /// Cursor position within the agents flat list.
     agent_list_cursor: usize,
+    /// Pins loaded from UiState waiting to be reapplied at first scan.
+    /// Drained on first successful agent rebuild; entries whose pane_id
+    /// is no longer live are silently dropped.
+    pending_pin_restore: Vec<(String, u8)>,
+    /// While Some, the next keystroke in agents view assigns this pane to a slot
+    /// (digit 0-9), or cancels (Esc / any other key). Captured by pressing `P`.
+    pin_assign_pending: Option<String>,
 }
 
 /// How often to poll tmux for session changes (seconds).
@@ -165,6 +172,8 @@ impl App {
             last_preview_refresh: Instant::now(),
             view_mode: ViewMode::Tree,
             agent_list_cursor: 0,
+            pending_pin_restore: Vec::new(),
+            pin_assign_pending: None,
         }
     }
 
@@ -173,6 +182,9 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut Tui, ui_state: persistence::UiState) -> std::io::Result<()> {
+        // Stage pin restore before the initial scan so the first do_agent_scan picks it up.
+        self.pending_pin_restore = ui_state.pins;
+
         // Initial session refresh (must run first so session children exist in the tree)
         self.do_refresh_sessions();
 
@@ -532,6 +544,16 @@ impl App {
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
             Mode::Normal => {
                 if matches!(self.view_mode, ViewMode::Agents) {
+                    if let Some(pending) = &self.pin_assign_pending {
+                        let target_path = self
+                            .state
+                            .all_agents_flat()
+                            .into_iter()
+                            .find(|a| &a.pane_id == pending)
+                            .map(|a| format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name))
+                            .unwrap_or_else(|| "agent".to_string());
+                        return StatusContext::AgentsViewSlotAssign { target_path };
+                    }
                     return StatusContext::AgentsView;
                 }
                 if matches!(self.focus, Focus::Notes) {
@@ -573,7 +595,7 @@ impl App {
 
         // In agents mode, route all keys there (bypasses tree/notes focus logic)
         if matches!(self.view_mode, ViewMode::Agents) {
-            return self.handle_agents_view_key(code, terminal);
+            return self.handle_agents_view_key(code, modifiers, terminal);
         }
 
         // Focus switching: Tab toggles, Ctrl+Arrow for directional switch
@@ -669,8 +691,49 @@ impl App {
         Ok(())
     }
 
-    fn handle_agents_view_key(&mut self, code: KeyCode, terminal: &mut Tui) -> std::io::Result<()> {
+    fn handle_agents_view_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         let agents = self.state.all_agents_flat();
+
+        let current_pane_id = agents
+            .get(self.agent_list_cursor)
+            .map(|a| a.pane_id.clone());
+
+        // If a P-triggered slot-assign is pending, the next keystroke either assigns
+        // (digit), cancels silently (Esc), or cancels and falls through (any other key).
+        if let Some(pending) = self.pin_assign_pending.take() {
+            if let KeyCode::Char(c) = code {
+                if c.is_ascii_digit() {
+                    let slot: u8 = c.to_digit(10).unwrap() as u8;
+                    let snapshot = agents.iter().find(|a| a.pane_id == pending);
+                    let already_in_slot = snapshot
+                        .and_then(|a| a.pin_slot)
+                        .map(|s| s == slot)
+                        .unwrap_or(false);
+                    let path = snapshot.map(|a| {
+                        format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name)
+                    });
+                    self.state.pin_agent_to(&pending, slot);
+                    if !already_in_slot {
+                        if let Some(p) = path {
+                            self.set_flash(&format!("Pin {}: {}", slot, p));
+                        }
+                    }
+                    self.reanchor_agent_cursor(Some(pending));
+                    return Ok(());
+                }
+            }
+            if matches!(code, KeyCode::Esc) {
+                // silent cancel
+                return Ok(());
+            }
+            // Any other key cancels assignment but still gets handled below.
+        }
+
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if !agents.is_empty() {
@@ -694,9 +757,74 @@ impl App {
             KeyCode::Char('q') => {
                 self.running = false;
             }
+            // Plain digit → jump to pinned slot AND attach (no Enter needed)
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                let slot: u8 = c.to_digit(10).unwrap() as u8;
+                let target = agents
+                    .iter()
+                    .enumerate()
+                    .find(|(_, a)| a.pin_slot == Some(slot))
+                    .map(|(idx, a)| (idx, a.tmux_session_name.clone(), a.window_index, a.pane_id.clone()));
+                if let Some((idx, session_name, window_index, pane_id)) = target {
+                    self.agent_list_cursor = idx;
+                    let _ = tmux::select_window(&session_name, window_index);
+                    let _ = tmux::select_pane(&pane_id);
+                    self.attach_to_session(&session_name, terminal)?;
+                }
+            }
+            // `p` → toggle pin (auto-assigns lowest free slot, or unpins)
+            KeyCode::Char('p') => {
+                if let Some(pane_id) = current_pane_id {
+                    let snapshot = agents.get(self.agent_list_cursor);
+                    let already_pinned = snapshot.map(|a| a.pin_slot.is_some()).unwrap_or(false);
+                    let path = snapshot.map(|a| {
+                        format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name)
+                    });
+
+                    if already_pinned {
+                        self.state.unpin_agent(&pane_id);
+                        if let Some(p) = &path {
+                            self.set_flash(&format!("Unpinned: {}", p));
+                        }
+                    } else {
+                        match self.state.pin_agent_auto(&pane_id) {
+                            Some(slot) => {
+                                if let Some(p) = &path {
+                                    self.set_flash(&format!("Pin {}: {}", slot, p));
+                                }
+                            }
+                            None => self.set_flash("Max 10 pins reached"),
+                        }
+                    }
+                    self.reanchor_agent_cursor(Some(pane_id));
+                }
+            }
+            // `P` (Shift+p) → enter slot-assign mode; next digit assigns
+            KeyCode::Char('P') => {
+                if current_pane_id.is_some() {
+                    self.pin_assign_pending = current_pane_id;
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Re-anchor `agent_list_cursor` to the agent with the given `pane_id`,
+    /// falling back to clamping in range if the agent is no longer in the flat list.
+    fn reanchor_agent_cursor(&mut self, anchor_pane_id: Option<String>) {
+        let agents = self.state.all_agents_flat();
+        if agents.is_empty() {
+            self.agent_list_cursor = 0;
+            return;
+        }
+        if let Some(id) = anchor_pane_id {
+            if let Some(idx) = agents.iter().position(|a| a.pane_id == id) {
+                self.agent_list_cursor = idx;
+                return;
+            }
+        }
+        self.agent_list_cursor = self.agent_list_cursor.min(agents.len() - 1);
     }
 
     /// Resolve the currently selected item accounting for the active view mode.
@@ -1442,12 +1570,23 @@ impl App {
             return;
         }
 
-        let custom_names: HashMap<String, String> = self
+        struct Preserved {
+            custom_name: Option<String>,
+            pin_slot: Option<u8>,
+        }
+        let snapshot: HashMap<String, Preserved> = self
             .state
             .agent_sessions
             .iter()
-            .filter(|a| a.renamed)
-            .map(|a| (a.pane_id.clone(), a.display_name.clone()))
+            .map(|a| {
+                (
+                    a.pane_id.clone(),
+                    Preserved {
+                        custom_name: if a.renamed { Some(a.display_name.clone()) } else { None },
+                        pin_slot: a.pin_slot,
+                    },
+                )
+            })
             .collect();
 
         let session_names: Vec<String> = self
@@ -1459,9 +1598,28 @@ impl App {
         self.state.agent_sessions = agent_scan::scan_agents(&session_names);
 
         for agent in &mut self.state.agent_sessions {
-            if let Some(name) = custom_names.get(&agent.pane_id) {
-                agent.display_name = name.clone();
-                agent.renamed = true;
+            if let Some(prev) = snapshot.get(&agent.pane_id) {
+                if let Some(name) = &prev.custom_name {
+                    agent.display_name = name.clone();
+                    agent.renamed = true;
+                }
+                agent.pin_slot = prev.pin_slot;
+            }
+        }
+
+        // Reapply pins persisted from the previous session, one-shot. Drained on first match attempt.
+        // Pins whose pane_id is no longer live get silently dropped (pin dies with the pane).
+        if !self.pending_pin_restore.is_empty() {
+            let restore: Vec<(String, u8)> = std::mem::take(&mut self.pending_pin_restore);
+            for (pane_id, slot) in restore {
+                if let Some(agent) = self
+                    .state
+                    .agent_sessions
+                    .iter_mut()
+                    .find(|a| a.pane_id == pane_id)
+                {
+                    agent.pin_slot = Some(slot);
+                }
             }
         }
 
@@ -1556,7 +1714,13 @@ impl App {
         };
         let agents_view_active = matches!(self.view_mode, ViewMode::Agents);
         let agent_list_cursor = self.agent_list_cursor;
-        let ui = persistence::UiState { open_nodes, selected, agents_view_active, agent_list_cursor };
+        let pins: Vec<(String, u8)> = self
+            .state
+            .agent_sessions
+            .iter()
+            .filter_map(|a| a.pin_slot.map(|s| (a.pane_id.clone(), s)))
+            .collect();
+        let ui = persistence::UiState { open_nodes, selected, agents_view_active, agent_list_cursor, pins };
         if let Err(e) = persistence::save_ui(&ui) {
             eprintln!("Failed to save UI state: {}", e);
         }

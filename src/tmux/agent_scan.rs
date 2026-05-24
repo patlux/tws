@@ -191,6 +191,7 @@ fn match_agents(
                         pane_title: pane.pane_title.clone(),
                         display_name,
                         renamed: false,
+                        pin_slot: None,
                     });
                 }
             }
