@@ -61,7 +61,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::Confirm => &[("y", "confirm"), ("Esc", "cancel")],
         StatusContext::Finder => &[("Enter", "attach"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
         StatusContext::ThreadPicker => &[("Enter", "move"), ("Esc", "cancel"), ("\u{2191}\u{2193}", "navigate")],
-        StatusContext::AgentsView => &[("j/k", "navigate"), ("Enter", "attach"), ("p", "pin"), ("0-9", "jump"), ("P", "set slot"), ("v", "tree view"), ("q", "quit")],
+        StatusContext::AgentsView => &[("j/k", "navigate"), ("Enter", "attach"), ("p", "pin"), ("0-9", "attach pin"), ("P", "set slot"), ("v", "tree view"), ("q", "quit")],
         // Hints empty when assign prompt is active — prompt itself replaces the hint row.
         StatusContext::AgentsViewSlotAssign { .. } => &[],
     };

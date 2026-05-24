@@ -289,11 +289,6 @@ impl AppState {
         }
     }
 
-    /// Look up which agent (if any) currently holds the given pin slot.
-    pub fn agent_by_pin_slot(&self, slot: u8) -> Option<&AgentSession> {
-        self.agent_sessions.iter().find(|a| a.pin_slot == Some(slot))
-    }
-
     /// Get all agents detected in a given tmux session.
     pub fn agents_for_session(&self, tmux_session_name: &str) -> Vec<&AgentSession> {
         self.agent_sessions
@@ -940,21 +935,6 @@ mod tests {
         state.agent_sessions.push(make_agent("%1"));
         assert_eq!(state.pin_agent_auto("%1"), Some(0));
         assert_eq!(state.agent_sessions[0].pin_slot, Some(0));
-    }
-
-    #[test]
-    fn agent_by_pin_slot_returns_correct_agent() {
-        let mut state = AppState::new();
-        let mut a = make_agent("%1");
-        a.pin_slot = Some(0);
-        let mut b = make_agent("%2");
-        b.pin_slot = Some(7);
-        state.agent_sessions.push(a);
-        state.agent_sessions.push(b);
-
-        assert_eq!(state.agent_by_pin_slot(0).unwrap().pane_id, "%1");
-        assert_eq!(state.agent_by_pin_slot(7).unwrap().pane_id, "%2");
-        assert!(state.agent_by_pin_slot(3).is_none());
     }
 
     #[test]

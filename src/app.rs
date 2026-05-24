@@ -757,14 +757,19 @@ impl App {
             KeyCode::Char('q') => {
                 self.running = false;
             }
-            // Plain digit → jump to slot
+            // Plain digit → jump to pinned slot AND attach (no Enter needed)
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 let slot: u8 = c.to_digit(10).unwrap() as u8;
-                if let Some(agent) = self.state.agent_by_pin_slot(slot) {
-                    let target_id = agent.pane_id.clone();
-                    if let Some(idx) = agents.iter().position(|a| a.pane_id == target_id) {
-                        self.agent_list_cursor = idx;
-                    }
+                let target = agents
+                    .iter()
+                    .enumerate()
+                    .find(|(_, a)| a.pin_slot == Some(slot))
+                    .map(|(idx, a)| (idx, a.tmux_session_name.clone(), a.window_index, a.pane_id.clone()));
+                if let Some((idx, session_name, window_index, pane_id)) = target {
+                    self.agent_list_cursor = idx;
+                    let _ = tmux::select_window(&session_name, window_index);
+                    let _ = tmux::select_pane(&pane_id);
+                    self.attach_to_session(&session_name, terminal)?;
                 }
             }
             // `p` → toggle pin (auto-assigns lowest free slot, or unpins)
