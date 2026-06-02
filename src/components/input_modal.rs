@@ -16,6 +16,7 @@ pub fn render(frame: &mut Frame, title: &str, input: &str, area: Rect, theme: &T
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
+        .style(theme.background)
         .title(format!(" {} ", title))
         .title_style(theme.modal_title)
         .border_style(theme.modal_border)

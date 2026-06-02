@@ -27,6 +27,7 @@ pub fn render(
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
+        .style(theme.background)
         .title(title)
         .title_style(theme.modal_title)
         .border_style(theme.modal_border)
