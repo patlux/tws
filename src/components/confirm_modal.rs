@@ -22,6 +22,7 @@ pub fn render(frame: &mut Frame, message: &str, area: Rect, theme: &Theme) {
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
+        .style(theme.background)
         .title(" Confirm ")
         .title_style(theme.modal_title)
         .border_style(theme.modal_border)
