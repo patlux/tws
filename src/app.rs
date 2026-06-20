@@ -49,6 +49,7 @@ enum ConfirmPurpose {
     DeleteThread { col_idx: usize, thread_idx: usize, name: String },
     KillSession { session_name: String },
     KillAllSessions { col_idx: usize, thread_idx: usize, thread_name: String },
+    DeleteWorktree { path: PathBuf, name: String, tmux_session_name: String },
 }
 
 struct FinderState {
@@ -545,6 +546,9 @@ impl App {
                         ConfirmPurpose::KillAllSessions { thread_name, .. } => {
                             format!("Kill all sessions for \"{}\"?", thread_name)
                         }
+                        ConfirmPurpose::DeleteWorktree { name, .. } => {
+                            format!("Delete worktree \"{}\"?", name)
+                        }
                     };
                     confirm_modal::render(frame, &message, area, &self.theme);
                 }
@@ -989,8 +993,20 @@ impl App {
                     name,
                 }
             }
+            SelectedItem::Worktree(col_idx, thread_idx, wt_idx) => {
+                let thread_id = self.state.collections[*col_idx].threads[*thread_idx].id;
+                let worktrees = self.state.worktrees_for_thread(thread_id);
+                let Some(worktree) = worktrees.get(*wt_idx) else {
+                    return;
+                };
+                ConfirmPurpose::DeleteWorktree {
+                    path: worktree.path.clone(),
+                    name: worktree.display_name.clone(),
+                    tmux_session_name: worktree.tmux_session_name.clone(),
+                }
+            }
             // Use 'x' to kill sessions, not 'd'
-            SelectedItem::Session(..) | SelectedItem::Worktree(..) | SelectedItem::Agent(..) | SelectedItem::None => return,
+            SelectedItem::Session(..) | SelectedItem::Agent(..) | SelectedItem::None => return,
         };
         self.mode = Mode::Confirm { purpose };
     }
@@ -1590,6 +1606,26 @@ impl App {
                     self.tree_state.select(thread_path);
                     self.set_flash("All sessions killed");
                     self.sync_note_editor();
+                }
+                ConfirmPurpose::DeleteWorktree { path, tmux_session_name, .. } => {
+                    match worktrees::remove(&path) {
+                        Ok(()) => {
+                            let _ = tmux::kill_session(&tmux_session_name);
+                            self.notes.remove(&tmux_session_name);
+                            self.refresh_worktree_sessions();
+                            let parent: Vec<String> = self.tree_state.selected()
+                                .iter()
+                                .rev()
+                                .skip(1)
+                                .rev()
+                                .cloned()
+                                .collect();
+                            self.tree_state.select(parent);
+                            self.set_flash("Worktree deleted");
+                            self.sync_note_editor();
+                        }
+                        Err(err) => self.set_flash(&format!("Delete failed: {}", err)),
+                    }
                 }
             }
         }

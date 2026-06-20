@@ -75,6 +75,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::NormalWorktree => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
             (keymap.key_hint(KeyMode::Normal, Action::Enter),          "launch"),
+            (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
             ("Tab".to_string(),                                        "notes"),
         ],

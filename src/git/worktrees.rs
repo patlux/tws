@@ -61,6 +61,27 @@ pub fn discover(repo: &Path, options: DiscoverOptions) -> std::io::Result<Vec<Di
     Ok(parse_porcelain(&String::from_utf8_lossy(&output.stdout), options))
 }
 
+pub fn remove(path: &Path) -> Result<(), String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["worktree", "remove"])
+        .arg(path)
+        .output()
+        .map_err(|err| format!("Failed to run git: {}", err))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err("Failed to delete worktree".to_string())
+        } else {
+            Err(stderr)
+        }
+    }
+}
+
 fn parse_porcelain(input: &str, options: DiscoverOptions) -> Vec<DiscoveredWorktree> {
     let mut entries = Vec::new();
     let mut current: Option<DiscoveredWorktree> = None;
