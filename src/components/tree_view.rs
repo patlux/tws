@@ -52,7 +52,7 @@ fn build_thread_item<'a>(
     thread: &'a Thread,
     theme: &Theme,
 ) -> TreeItem<'a, String> {
-    let session_children: Vec<TreeItem<'a, String>> = state
+    let mut session_children: Vec<TreeItem<'a, String>> = state
         .active_sessions
         .iter()
         .filter(|s| s.thread_id == thread.id)
@@ -88,6 +88,34 @@ fn build_thread_item<'a>(
         })
         .collect();
 
+    for worktree in state.worktrees_for_thread(thread.id) {
+        let (icon, name_style) = if worktree.launchable {
+            ("◌ ", theme.worktree)
+        } else {
+            ("✕ ", theme.worktree_prunable)
+        };
+        let mut spans = vec![
+            Span::styled(icon, theme.worktree_meta),
+            Span::styled(&worktree.display_name, name_style),
+        ];
+        if let Some(branch) = &worktree.branch {
+            spans.push(Span::styled("  ", theme.worktree_meta));
+            spans.push(Span::styled(branch_display_name(branch), theme.worktree_meta));
+        } else if let Some(head) = &worktree.head {
+            spans.push(Span::styled("  ", theme.worktree_meta));
+            spans.push(Span::styled(short_head(head), theme.worktree_meta));
+        }
+        if worktree.prunable {
+            spans.push(Span::styled("  prunable", theme.worktree_prunable));
+        } else if !worktree.path_exists {
+            spans.push(Span::styled("  missing", theme.worktree_prunable));
+        }
+        session_children.push(TreeItem::new_leaf(
+            worktree.tmux_session_name.clone(),
+            Line::from(spans),
+        ));
+    }
+
     let session_count = session_children.len();
 
     let thread_text = if session_count > 0 {
@@ -106,4 +134,16 @@ fn build_thread_item<'a>(
         TreeItem::new(thread.id.to_string(), thread_text, session_children)
             .expect("session names are unique within a thread")
     }
+}
+
+fn branch_display_name(branch: &str) -> String {
+    branch
+        .strip_prefix("refs/heads/")
+        .or_else(|| branch.strip_prefix("refs/remotes/"))
+        .unwrap_or(branch)
+        .to_string()
+}
+
+fn short_head(head: &str) -> String {
+    head.chars().take(8).collect()
 }

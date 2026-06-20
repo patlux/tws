@@ -52,6 +52,9 @@ pub struct Theme {
     pub thread: Style,
     pub thread_dim: Style,
     pub session: Style,
+    pub worktree: Style,
+    pub worktree_meta: Style,
+    pub worktree_prunable: Style,
     pub highlight: Style,
     pub highlight_unfocused: Style,
 
@@ -136,6 +139,9 @@ impl Theme {
             thread: Style::new().fg(p.accent),
             thread_dim: Style::new().fg(darken_toward(p.accent, p.border, 0.5)),
             session: Style::new().fg(p.green),
+            worktree: Style::new().fg(darken_toward(p.green, p.border, 0.45)),
+            worktree_meta: Style::new().fg(muted_text),
+            worktree_prunable: Style::new().fg(darken_toward(p.accent, p.border, 0.55)),
             highlight: Style::new()
                 .fg(p.bg)
                 .bg(p.accent)

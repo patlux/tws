@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -14,9 +15,12 @@ use crate::components::{agent_preview, agents_view, confirm_modal, finder_modal,
 use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
+use crate::core::model::{WorktreeSession, slugify};
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::event;
+use crate::config::WorktreeConfig;
 use crate::config::keys::{Action, KeyMode, Keymap};
+use crate::git::worktrees::{self, DiscoverOptions};
 use crate::theme::{Theme, NoteStyleSheet};
 use crate::tmux::agent_scan;
 use crate::tmux::commands as tmux;
@@ -143,6 +147,8 @@ pub struct App {
     theme: Theme,
     /// Key bindings (user-configurable).
     keymap: Keymap,
+    /// Git worktree integrations loaded from config.toml.
+    worktree_configs: Vec<WorktreeConfig>,
     /// Pins loaded from UiState waiting to be reapplied at first scan.
     /// Drained on first successful agent rebuild; entries whose pane_id
     /// is no longer live are silently dropped.
@@ -158,8 +164,24 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// How often to re-capture the agent pane preview (seconds).
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
+fn expand_home(path: &str) -> PathBuf {
+    if path == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+fn short_head(head: &str) -> &str {
+    head.get(..8).unwrap_or(head)
+}
+
 impl App {
-    pub fn new(state: AppState, theme: Theme, note_stylesheet: NoteStyleSheet, keymap: Keymap) -> Self {
+    pub fn new(state: AppState, theme: Theme, note_stylesheet: NoteStyleSheet, keymap: Keymap, worktree_configs: Vec<WorktreeConfig>) -> Self {
         Self {
             state,
             tree_state: TreeState::default(),
@@ -179,6 +201,7 @@ impl App {
             agent_list_cursor: 0,
             theme,
             keymap,
+            worktree_configs,
             pending_pin_restore: Vec::new(),
             pin_assign_pending: None,
         }
@@ -313,6 +336,11 @@ impl App {
                 let thread = &self.state.collections[*col_idx].threads[*thread_idx];
                 let sessions = self.state.sessions_for_thread(thread.id);
                 sessions.get(*sess_idx).map(|s| s.display_name.clone())
+            }
+            SelectedItem::Worktree(col_idx, thread_idx, wt_idx) => {
+                let thread = &self.state.collections[*col_idx].threads[*thread_idx];
+                let worktrees = self.state.worktrees_for_thread(thread.id);
+                worktrees.get(*wt_idx).map(|w| w.display_name.clone())
             }
             SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
                 self.state.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
@@ -578,6 +606,7 @@ impl App {
                     SelectedItem::Collection(_) => StatusContext::NormalCollection,
                     SelectedItem::Thread(_, _) => StatusContext::NormalThread,
                     SelectedItem::Session(_, _, _) => StatusContext::NormalSession,
+                    SelectedItem::Worktree(_, _, _) => StatusContext::NormalWorktree,
                     SelectedItem::Agent(..) => StatusContext::NormalAgent,
                 }
             }
@@ -676,8 +705,8 @@ impl App {
             Action::KillSession => self.start_kill_session(),
             Action::Move => self.start_move_session(),
             Action::Finder => {
-                if self.state.active_sessions.is_empty() {
-                    self.set_flash("No active sessions");
+                if self.state.active_sessions.is_empty() && self.state.worktree_sessions.is_empty() {
+                    self.set_flash("No sessions or worktrees");
                     return Ok(());
                 }
                 self.start_finder();
@@ -886,7 +915,11 @@ impl App {
     fn start_add(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         let purpose = match selected {
-            SelectedItem::Collection(idx) | SelectedItem::Thread(idx, _) | SelectedItem::Session(idx, _, _) | SelectedItem::Agent(idx, _, _, _) => {
+            SelectedItem::Collection(idx)
+            | SelectedItem::Thread(idx, _)
+            | SelectedItem::Session(idx, _, _)
+            | SelectedItem::Worktree(idx, _, _)
+            | SelectedItem::Agent(idx, _, _, _) => {
                 InputPurpose::AddThread {
                     collection_idx: idx,
                 }
@@ -931,7 +964,7 @@ impl App {
                     None => return,
                 }
             }
-            SelectedItem::None => return,
+            SelectedItem::Worktree(..) | SelectedItem::None => return,
         };
         self.mode = Mode::Input {
             purpose,
@@ -957,7 +990,7 @@ impl App {
                 }
             }
             // Use 'x' to kill sessions, not 'd'
-            SelectedItem::Session(..) | SelectedItem::Agent(..) | SelectedItem::None => return,
+            SelectedItem::Session(..) | SelectedItem::Worktree(..) | SelectedItem::Agent(..) | SelectedItem::None => return,
         };
         self.mode = Mode::Confirm { purpose };
     }
@@ -1057,6 +1090,20 @@ impl App {
                     self.attach_to_session(&session_name, terminal)?;
                 }
             }
+            SelectedItem::Worktree(col_idx, thread_idx, wt_idx) => {
+                let thread = &self.state.collections[col_idx].threads[thread_idx];
+                let worktrees = self.state.worktrees_for_thread(thread.id);
+                if let Some(worktree) = worktrees.get(wt_idx) {
+                    if !worktree.launchable {
+                        self.set_flash("Worktree is prunable or missing");
+                        return Ok(());
+                    }
+                    let session_name = worktree.tmux_session_name.clone();
+                    let path = worktree.path.clone();
+                    self.launch_session_in_dir(&session_name, path, terminal)?;
+                    self.set_flash("Worktree launched");
+                }
+            }
             SelectedItem::None => {
                 let (col_idx, thread_idx) = self.state.ensure_general_thread();
                 self.mode = Mode::Input {
@@ -1072,13 +1119,23 @@ impl App {
         let mut sessions: Vec<_> = self.state.active_sessions.iter().collect();
         sessions.sort_by(|a, b| b.last_attached.cmp(&a.last_attached));
 
-        let entries: Vec<(String, String)> = sessions
+        let mut entries: Vec<(String, String)> = sessions
             .iter()
             .filter_map(|s| {
                 let path = self.state.session_display_path(s)?;
                 Some((s.tmux_session_name.clone(), path))
             })
             .collect();
+
+        let mut worktrees: Vec<_> = self.state.worktree_sessions.iter().collect();
+        worktrees.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+        entries.extend(worktrees.into_iter().filter_map(|w| {
+            if self.state.active_sessions.iter().any(|s| s.tmux_session_name == w.tmux_session_name) {
+                return None;
+            }
+            let path = self.state.worktree_display_path(w)?;
+            Some((w.tmux_session_name.clone(), format!("{}  {}", path, w.path.display())))
+        }));
 
         self.mode = Mode::Finder {
             state: FinderState::new(entries),
@@ -1114,7 +1171,7 @@ impl App {
                 if let Mode::Finder { state } = old_mode {
                     if let Some(&idx) = state.filtered.get(state.cursor) {
                         let name = state.all_entries[idx].0.clone();
-                        self.attach_to_session(&name, terminal)?;
+                        self.open_session_or_worktree(&name, terminal)?;
                         if let Some(path) = self.state.session_tree_path(&name) {
                             self.tree_state.select(path);
                         }
@@ -1274,6 +1331,11 @@ impl App {
                 let thread = &self.state.collections[col_idx].threads[thread_idx];
                 let sessions = self.state.sessions_for_thread(thread.id);
                 sessions.get(sess_idx).map(|s| s.tmux_session_name.clone())
+            }
+            SelectedItem::Worktree(col_idx, thread_idx, wt_idx) => {
+                let thread = &self.state.collections[col_idx].threads[thread_idx];
+                let worktrees = self.state.worktrees_for_thread(thread.id);
+                worktrees.get(wt_idx).map(|w| w.tmux_session_name.clone())
             }
             SelectedItem::Agent(..) => None,
         }
@@ -1539,6 +1601,28 @@ impl App {
         self.attach_to_session(session_name, terminal)
     }
 
+    /// Launch a new tmux session in a worktree directory and attach to it.
+    fn launch_session_in_dir(&mut self, session_name: &str, cwd: PathBuf, terminal: &mut Tui) -> std::io::Result<()> {
+        tmux::new_session_in_dir(session_name, &cwd)?;
+        self.attach_to_session(session_name, terminal)
+    }
+
+    fn open_session_or_worktree(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
+        if self.state.active_sessions.iter().any(|s| s.tmux_session_name == session_name) {
+            return self.attach_to_session(session_name, terminal);
+        }
+
+        if let Some(worktree) = self.state.find_worktree_by_tmux_name(session_name) {
+            if !worktree.launchable {
+                self.set_flash("Worktree is prunable or missing");
+                return Ok(());
+            }
+            return self.launch_session_in_dir(session_name, worktree.path.clone(), terminal);
+        }
+
+        Ok(())
+    }
+
     /// Attach or switch to a tmux session by name.
     fn attach_to_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
         if tmux::is_inside_tmux() {
@@ -1557,10 +1641,92 @@ impl App {
     }
 
     fn do_refresh_sessions(&mut self) {
+        self.refresh_worktree_sessions();
         let live = tmux::list_tws_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
         self.last_refresh = Instant::now();
         self.do_agent_scan();
+    }
+
+    fn refresh_worktree_sessions(&mut self) {
+        if self.worktree_configs.is_empty() {
+            self.state.refresh_worktree_sessions(Vec::new());
+            return;
+        }
+
+        let mut sessions = Vec::new();
+        let mut used_names = HashSet::new();
+
+        for cfg in &self.worktree_configs {
+            let Some((col_idx, thread_idx)) = self.find_thread_for_worktree_config(cfg) else {
+                continue;
+            };
+            let repo = expand_home(&cfg.repo);
+            let options = DiscoverOptions {
+                include_main: cfg.include_main(),
+                include_detached: cfg.include_detached(),
+                skip_prunable: cfg.skip_prunable(),
+            };
+            let Ok(worktrees) = worktrees::discover(&repo, options) else {
+                continue;
+            };
+
+            let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+            for wt in worktrees {
+                let mut label = slugify(&wt.label_source());
+                if label.is_empty() {
+                    label = wt.head.as_deref().map(short_head).unwrap_or("worktree").to_string();
+                }
+                let mut session_name = match self.state.make_session_name(col_idx, thread_idx, &label) {
+                    Some(name) => name,
+                    None => continue,
+                };
+                if used_names.contains(&session_name) {
+                    if let Some(head) = wt.head.as_deref() {
+                        label = format!("{}-{}", label, short_head(head));
+                        if let Some(name) = self.state.make_session_name(col_idx, thread_idx, &label) {
+                            session_name = name;
+                        }
+                    }
+                }
+                if !used_names.insert(session_name.clone()) {
+                    continue;
+                }
+                let path_exists = wt.path.is_dir();
+                let launchable = path_exists && !wt.prunable;
+                sessions.push(WorktreeSession {
+                    tmux_session_name: session_name,
+                    display_name: label,
+                    thread_id,
+                    path: wt.path,
+                    branch: wt.branch,
+                    head: wt.head,
+                    prunable: wt.prunable,
+                    path_exists,
+                    launchable,
+                });
+            }
+        }
+
+        self.state.refresh_worktree_sessions(sessions);
+    }
+
+    fn find_thread_for_worktree_config(&self, cfg: &WorktreeConfig) -> Option<(usize, usize)> {
+        self.state
+            .collections
+            .iter()
+            .enumerate()
+            .find_map(|(col_idx, col)| {
+                let collection_matches = match cfg.collection.as_deref() {
+                    Some(name) => !col.is_root && col.name == name,
+                    None => col.is_root,
+                };
+                if !collection_matches {
+                    return None;
+                }
+                let thread_idx = col.threads.iter().position(|thread| thread.name == cfg.thread)?;
+                Some((col_idx, thread_idx))
+            })
     }
 
     fn check_agent_trigger(&self) -> bool {

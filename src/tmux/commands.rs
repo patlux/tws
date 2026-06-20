@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 /// Returns the names of all running tmux sessions.
@@ -51,6 +52,15 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
 pub fn new_session(name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
         .args(["new-session", "-d", "-s", name])
+        .status()?;
+    Ok(status.success())
+}
+
+/// Creates a new detached tmux session with the given name and working directory.
+pub fn new_session_in_dir(name: &str, cwd: &Path) -> std::io::Result<bool> {
+    let status = Command::new("tmux")
+        .args(["new-session", "-d", "-s", name, "-c"])
+        .arg(cwd)
         .status()?;
     Ok(status.success())
 }

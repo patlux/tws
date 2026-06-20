@@ -42,6 +42,27 @@ Press `/` to search across all active sessions by name or path, sorted by most-r
 
 Keys `1`–`5` attach to the five most-recently-attached sessions instantly — useful for hopping between two or three active workstreams without leaving the keyboard home row.
 
+### Git worktrees
+
+Optional `[[worktrees]]` config entries show Git worktrees as launchable sessions under a thread. Worktrees are rendered dimmed until they are running. Press `Enter` on one to create a tmux session in that worktree's directory and attach to it.
+
+```toml
+[[worktrees]]
+collection = "Personal"
+thread = "infra"
+repo = "~/dev/Personal/infra"
+```
+
+By default, tws includes the main checkout and detached worktrees, and skips prunable worktrees. Optional flags:
+
+```toml
+include_main = true
+include_detached = true
+skip_prunable = true
+```
+
+When `skip_prunable = false`, prunable or missing worktrees are shown with a `✕` marker and a `prunable`/`missing` label. They are informational only and cannot be launched.
+
 ### Agent detection
 
 tws scans tmux panes periodically and identifies running AI coding agents by their child process names — no manual registration. Agents appear automatically under their session in the tree. The optional install-time hooks make tws refresh immediately when an agent starts or stops, instead of waiting for the next scan.
@@ -80,6 +101,7 @@ git clone https://github.com/ytaskiran/tws
 cd tws
 cargo install --path .
 ```
+
 
 ### macOS Gatekeeper
 

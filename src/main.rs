@@ -2,6 +2,7 @@ mod app;
 mod components;
 mod core;
 mod event;
+mod git;
 mod import;
 mod theme;
 mod tmux;
@@ -41,6 +42,7 @@ fn run_tui() -> std::io::Result<()> {
     let state = AppState {
         collections,
         active_sessions: Vec::new(),
+        worktree_sessions: Vec::new(),
         agent_sessions: Vec::new(),
     };
 
@@ -49,9 +51,10 @@ fn run_tui() -> std::io::Result<()> {
     let theme = theme::Theme::build(&palette);
     let note_stylesheet = theme::NoteStyleSheet::new(&palette);
     let keymap = config::build_keymap(&cfg);
+    let worktrees = cfg.worktrees.clone();
 
     let mut terminal = tui::init()?;
-    let mut app = App::new(state, theme, note_stylesheet, keymap);
+    let mut app = App::new(state, theme, note_stylesheet, keymap, worktrees);
     let result = app.run(&mut terminal, ui_state);
     tui::restore()?;
     result

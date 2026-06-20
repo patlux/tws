@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -25,6 +27,20 @@ pub struct Session {
     pub thread_id: Uuid,
     /// Unix timestamp of last attachment (0 = unknown). Used for recent-sessions bar.
     pub last_attached: i64,
+}
+
+/// Runtime-only, never serialized. Represents a Git worktree that can be launched as a tmux session.
+#[derive(Debug, Clone)]
+pub struct WorktreeSession {
+    pub tmux_session_name: String,
+    pub display_name: String,
+    pub thread_id: Uuid,
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub prunable: bool,
+    pub path_exists: bool,
+    pub launchable: bool,
 }
 
 /// Which AI coding agent is running in a tmux pane.
@@ -97,7 +113,7 @@ impl Thread {
 
 /// Converts a string to a URL-style slug: lowercase, non-alphanumeric → hyphens,
 /// consecutive hyphens collapsed, leading/trailing hyphens stripped.
-fn slugify(s: &str) -> String {
+pub fn slugify(s: &str) -> String {
     let slug: String = s
         .to_lowercase()
         .chars()

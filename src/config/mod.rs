@@ -11,15 +11,42 @@ use crate::core::persistence;
 use keys::{KeyMode, Keymap};
 use palette::{Palette, PaletteOverride};
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub theme: Option<String>,
     pub palette: Option<PaletteOverride>,
     pub keys: Option<KeysConfig>,
+    pub worktrees: Vec<WorktreeConfig>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct WorktreeConfig {
+    /// Optional collection name. Omit for root-level threads.
+    pub collection: Option<String>,
+    pub thread: String,
+    pub repo: String,
+    pub include_main: Option<bool>,
+    pub include_detached: Option<bool>,
+    pub skip_prunable: Option<bool>,
+}
+
+impl WorktreeConfig {
+    pub fn include_main(&self) -> bool {
+        self.include_main.unwrap_or(true)
+    }
+
+    pub fn include_detached(&self) -> bool {
+        self.include_detached.unwrap_or(true)
+    }
+
+    pub fn skip_prunable(&self) -> bool {
+        self.skip_prunable.unwrap_or(true)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct KeysConfig {
     pub normal: Option<HashMap<String, String>>,
@@ -154,6 +181,24 @@ mod tests {
         let keys = config.keys.unwrap();
         let normal = keys.normal.unwrap();
         assert_eq!(normal.get("quit").map(|s| s.as_str()), Some("Q"));
+    }
+
+    #[test]
+    fn parse_worktree_config() {
+        let toml_str = r##"
+            [[worktrees]]
+            collection = "Personal"
+            thread = "infra"
+            repo = "~/dev/Personal/infra"
+            include_main = false
+        "##;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.worktrees.len(), 1);
+        assert_eq!(config.worktrees[0].collection.as_deref(), Some("Personal"));
+        assert_eq!(config.worktrees[0].thread, "infra");
+        assert!(!config.worktrees[0].include_main());
+        assert!(config.worktrees[0].include_detached());
+        assert!(config.worktrees[0].skip_prunable());
     }
 
     #[test]

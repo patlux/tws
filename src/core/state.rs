@@ -1,11 +1,13 @@
 use uuid::Uuid;
 
-use super::model::{AgentSession, Collection, Thread, Session, tmux_session_name_labeled, tmux_session_prefix, tmux_root_session_name_labeled, tmux_root_session_prefix};
+use super::model::{AgentSession, Collection, Thread, Session, WorktreeSession, tmux_session_name_labeled, tmux_session_prefix, tmux_root_session_name_labeled, tmux_root_session_prefix};
 
 pub struct AppState {
     pub collections: Vec<Collection>,
     /// Runtime-only: live tmux sessions managed by tws. Never persisted.
     pub active_sessions: Vec<Session>,
+    /// Runtime-only: Git worktrees that can be launched as tws sessions. Never persisted.
+    pub worktree_sessions: Vec<WorktreeSession>,
     /// Runtime-only: AI agents detected in tmux panes. Never persisted.
     pub agent_sessions: Vec<AgentSession>,
 }
@@ -37,6 +39,8 @@ pub enum SelectedItem {
     Thread(usize, usize),
     /// A session is selected (collection index, thread index, session index within active_sessions for that thread).
     Session(usize, usize, usize),
+    /// A launchable Git worktree is selected (collection index, thread index, worktree index within worktree_sessions for that thread).
+    Worktree(usize, usize, usize),
     /// An agent is selected (collection index, thread index, session index, agent index within agents_for_session).
     Agent(usize, usize, usize, usize),
 }
@@ -81,6 +85,10 @@ impl AppState {
                     if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == *second) {
                         return SelectedItem::Session(col_idx, thread_idx, sess_idx);
                     }
+                    let worktrees = self.worktrees_for_thread(thread.id);
+                    if let Some(wt_idx) = worktrees.iter().position(|w| w.tmux_session_name == *second) {
+                        return SelectedItem::Worktree(col_idx, thread_idx, wt_idx);
+                    }
                 }
                 SelectedItem::None
             }
@@ -92,9 +100,12 @@ impl AppState {
                         let sessions = self.sessions_for_thread(thread.id);
                         if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[2]) {
                             return SelectedItem::Session(col_idx, thread_idx, sess_idx);
-                        } else {
-                            return SelectedItem::Thread(col_idx, thread_idx);
                         }
+                        let worktrees = self.worktrees_for_thread(thread.id);
+                        if let Some(wt_idx) = worktrees.iter().position(|w| w.tmux_session_name == selected[2]) {
+                            return SelectedItem::Worktree(col_idx, thread_idx, wt_idx);
+                        }
+                        return SelectedItem::Thread(col_idx, thread_idx);
                     }
                 }
                 // Try root agent: thread / session / pane_id
@@ -107,6 +118,10 @@ impl AppState {
                             return SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx);
                         }
                         return SelectedItem::Session(col_idx, thread_idx, sess_idx);
+                    }
+                    let worktrees = self.worktrees_for_thread(thread.id);
+                    if let Some(wt_idx) = worktrees.iter().position(|w| w.tmux_session_name == selected[1]) {
+                        return SelectedItem::Worktree(col_idx, thread_idx, wt_idx);
                     }
                 }
                 SelectedItem::None
@@ -178,6 +193,11 @@ impl AppState {
                 let thread_id = self.collections.get(*col_idx)?.threads.get(*thread_idx)?.id;
                 let sessions = self.sessions_for_thread(thread_id);
                 sessions.get(*sess_idx).map(|s| s.display_name.clone())
+            }
+            SelectedItem::Worktree(col_idx, thread_idx, wt_idx) => {
+                let thread_id = self.collections.get(*col_idx)?.threads.get(*thread_idx)?.id;
+                let worktrees = self.worktrees_for_thread(thread_id);
+                worktrees.get(*wt_idx).map(|w| w.display_name.clone())
             }
             SelectedItem::Collection(idx) => {
                 self.collections.get(*idx).map(|c| c.name.clone())
@@ -319,6 +339,21 @@ impl AppState {
             .collect()
     }
 
+    /// Get all launchable worktree sessions belonging to a given thread, excluding already-active tmux sessions.
+    pub fn worktrees_for_thread(&self, thread_id: Uuid) -> Vec<&WorktreeSession> {
+        self.worktree_sessions
+            .iter()
+            .filter(|w| w.thread_id == thread_id)
+            .filter(|w| !self.active_sessions.iter().any(|s| s.tmux_session_name == w.tmux_session_name))
+            .collect()
+    }
+
+    pub fn find_worktree_by_tmux_name(&self, session_name: &str) -> Option<&WorktreeSession> {
+        self.worktree_sessions
+            .iter()
+            .find(|w| w.tmux_session_name == session_name)
+    }
+
     /// Check whether a thread has any active sessions.
     pub fn has_active_session(&self, col_idx: usize, thread_idx: usize) -> bool {
         if let Some(col) = self.collections.get(col_idx) {
@@ -363,12 +398,25 @@ impl AppState {
         }
     }
 
+    pub fn refresh_worktree_sessions(&mut self, worktree_sessions: Vec<WorktreeSession>) {
+        self.worktree_sessions = worktree_sessions;
+    }
+
     /// Format a session's display path: `Collection/Thread/label` or `Thread/label` for root threads.
     pub fn session_display_path(&self, session: &Session) -> Option<String> {
         let (col_name, thread_name) = self.resolve_thread_path(session.thread_id)?;
         Some(match col_name {
             Some(c) => format!("{}/{}/{}", c, thread_name, session.display_name),
             None => format!("{}/{}", thread_name, session.display_name),
+        })
+    }
+
+    /// Format a worktree's display path: `Collection/Thread/label` or `Thread/label` for root threads.
+    pub fn worktree_display_path(&self, worktree: &WorktreeSession) -> Option<String> {
+        let (col_name, thread_name) = self.resolve_thread_path(worktree.thread_id)?;
+        Some(match col_name {
+            Some(c) => format!("{}/{}/{}", c, thread_name, worktree.display_name),
+            None => format!("{}/{}", thread_name, worktree.display_name),
         })
     }
 
@@ -534,6 +582,7 @@ impl AppState {
         Self {
             collections: Vec::new(),
             active_sessions: Vec::new(),
+            worktree_sessions: Vec::new(),
             agent_sessions: Vec::new(),
         }
     }
@@ -558,6 +607,7 @@ impl AppState {
         Self {
             collections: vec![work, learning, podcast, personal],
             active_sessions: Vec::new(),
+            worktree_sessions: Vec::new(),
             agent_sessions: Vec::new(),
         }
     }
@@ -768,6 +818,55 @@ mod tests {
             SelectedItem::Session(_, _, sess_idx) => assert_eq!(sess_idx, 1),
             _ => panic!("expected Session"),
         }
+    }
+
+    #[test]
+    fn resolve_worktree_selection() {
+        let mut state = AppState::with_sample_data();
+        let thread_id = state.collections[0].threads[0].id;
+        state.refresh_worktree_sessions(vec![WorktreeSession {
+            tmux_session_name: "tws_work_edge-device-pipeline_feature-x".into(),
+            display_name: "feature-x".into(),
+            thread_id,
+            path: std::path::PathBuf::from("/tmp/feature-x"),
+            branch: Some("refs/heads/feature/x".into()),
+            head: Some("abcdef123456".into()),
+            prunable: false,
+            path_exists: true,
+            launchable: true,
+        }]);
+
+        let col_id = state.collections[0].id.to_string();
+        let thread_uuid = state.collections[0].threads[0].id.to_string();
+        match state.resolve_selection(&[
+            col_id,
+            thread_uuid,
+            "tws_work_edge-device-pipeline_feature-x".into(),
+        ]) {
+            SelectedItem::Worktree(_, _, wt_idx) => assert_eq!(wt_idx, 0),
+            _ => panic!("expected Worktree"),
+        }
+    }
+
+    #[test]
+    fn active_session_hides_matching_worktree() {
+        let mut state = AppState::with_sample_data();
+        let thread_id = state.collections[0].threads[0].id;
+        state.refresh_worktree_sessions(vec![WorktreeSession {
+            tmux_session_name: "tws_work_edge-device-pipeline_feature-x".into(),
+            display_name: "feature-x".into(),
+            thread_id,
+            path: std::path::PathBuf::from("/tmp/feature-x"),
+            branch: Some("refs/heads/feature/x".into()),
+            head: Some("abcdef123456".into()),
+            prunable: false,
+            path_exists: true,
+            launchable: true,
+        }]);
+        assert_eq!(state.worktrees_for_thread(thread_id).len(), 1);
+
+        state.refresh_sessions(&[("tws_work_edge-device-pipeline_feature-x".into(), 0)]);
+        assert!(state.worktrees_for_thread(thread_id).is_empty());
     }
 
     #[test]
