@@ -1,4 +1,8 @@
 
+## Fork differences
+
+- Git worktree support
+
 # tws
 
 **tmux workspace manager** — organize your tmux sessions into threads.
