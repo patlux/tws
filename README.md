@@ -102,6 +102,13 @@ cd tws
 cargo install --path .
 ```
 
+For local development builds, including builds from git worktrees, this repository also provides:
+
+```sh
+./scripts/install-local.sh
+```
+
+It builds the current checkout and installs the resulting binary to `~/.local/bin/tws`.
 
 ### macOS Gatekeeper
 
