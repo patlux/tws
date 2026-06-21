@@ -1,6 +1,7 @@
 pub mod agent_preview;
 pub mod agents_view;
 pub mod confirm_modal;
+pub mod error_modal;
 pub mod finder_modal;
 pub mod input_modal;
 pub mod notes_sidebar;

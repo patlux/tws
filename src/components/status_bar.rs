@@ -18,6 +18,7 @@ pub enum StatusContext {
     Notes,
     Input,
     Confirm,
+    Error,
     Finder,
     ThreadPicker,
     AgentsView,
@@ -97,6 +98,9 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::Confirm => vec![
             (keymap.key_hint(KeyMode::ConfirmModal, Action::Confirm), "confirm"),
             (keymap.key_hint(KeyMode::ConfirmModal, Action::Cancel),  "cancel"),
+        ],
+        StatusContext::Error => vec![
+            ("Enter/Esc".to_string(), "close"),
         ],
         StatusContext::Finder => vec![
             (keymap.key_hint(KeyMode::Finder, Action::Confirm),                                "attach"),

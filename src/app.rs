@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{agent_preview, agents_view, confirm_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
+use crate::components::{agent_preview, agents_view, confirm_modal, error_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
 use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
@@ -111,6 +111,9 @@ enum Mode {
     },
     Confirm {
         purpose: ConfirmPurpose,
+    },
+    Error {
+        message: String,
     },
     Finder {
         state: FinderState,
@@ -225,6 +228,17 @@ impl App {
         self.flash = Some((msg.to_string(), Instant::now()));
     }
 
+    fn set_error(&mut self, msg: impl Into<String>) {
+        let message = msg.into();
+        let message = if message.trim().is_empty() {
+            "Unknown error".to_string()
+        } else {
+            message
+        };
+        self.flash = None;
+        self.mode = Mode::Error { message };
+    }
+
     pub fn run(&mut self, terminal: &mut Tui, ui_state: persistence::UiState) -> std::io::Result<()> {
         // Stage pin restore before the initial scan so the first do_agent_scan picks it up.
         self.pending_pin_restore = ui_state.pins;
@@ -278,6 +292,7 @@ impl App {
                     }
                     Mode::Input { .. } => self.handle_input_key(key.code, key.modifiers, terminal)?,
                     Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
+                    Mode::Error { .. } => self.handle_error_key(key.code, key.modifiers),
                     Mode::Finder { .. } => {
                         self.handle_finder_key(key.code, key.modifiers, terminal)?
                     }
@@ -565,6 +580,9 @@ impl App {
                     };
                     confirm_modal::render(frame, &message, area, &self.theme);
                 }
+                Mode::Error { message } => {
+                    error_modal::render(frame, message, area, &self.theme);
+                }
                 Mode::Finder { state } => {
                     finder_modal::render(
                         frame,
@@ -599,6 +617,7 @@ impl App {
         match &self.mode {
             Mode::Input { .. } => StatusContext::Input,
             Mode::Confirm { .. } => StatusContext::Confirm,
+            Mode::Error { .. } => StatusContext::Error,
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
             Mode::Normal => {
@@ -1043,6 +1062,12 @@ impl App {
                 self.mode = Mode::Normal;
             }
             _ => {}
+        }
+    }
+
+    fn handle_error_key(&mut self, code: KeyCode, _modifiers: KeyModifiers) {
+        if matches!(code, KeyCode::Enter | KeyCode::Esc) {
+            self.mode = Mode::Normal;
         }
     }
 
@@ -1605,7 +1630,7 @@ impl App {
                         let start_dir = match self.resolve_start_dir(col_idx, thread_idx) {
                             Ok(dir) => dir,
                             Err(msg) => {
-                                self.set_flash(&msg);
+                                self.set_error(msg);
                                 return Ok(());
                             }
                         };
@@ -1765,7 +1790,7 @@ impl App {
                             self.set_flash("Worktree deleted");
                             self.sync_note_editor();
                         }
-                        Err(err) => self.set_flash(&format!("Delete failed: {}", err)),
+                        Err(err) => self.set_error(format!("Delete failed: {}", err)),
                     }
                 }
             }

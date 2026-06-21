@@ -76,6 +76,10 @@ pub struct Theme {
     pub modal_title: Style,
     pub modal_muted: Style,
 
+    // Error modal
+    pub error_border: Style,
+    pub error_title: Style,
+
     // Empty state
     pub empty_title: Style,
     pub empty_hint: Style,
@@ -165,6 +169,10 @@ impl Theme {
             modal_border: Style::new().fg(p.accent),
             modal_title: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
             modal_muted: Style::new().fg(muted_text),
+
+            // Error modal
+            error_border: Style::new().fg(brighten(p.accent, 48)),
+            error_title: Style::new().fg(brighten(p.accent, 48)).add_modifier(Modifier::BOLD),
 
             // Empty state
             empty_title: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
