@@ -159,6 +159,8 @@ pub struct App {
     /// While Some, the next keystroke in agents view assigns this pane to a slot
     /// (digit 0-9), or cancels (Esc / any other key). Captured by pressing `P`.
     pin_assign_pending: Option<String>,
+    /// True after a first `g` in normal navigation; the next `g` jumps to top.
+    jump_to_top_pending: bool,
 }
 
 /// How often to poll tmux for session changes (seconds).
@@ -215,6 +217,7 @@ impl App {
             worktree_configs,
             pending_pin_restore: Vec::new(),
             pin_assign_pending: None,
+            jump_to_top_pending: false,
         }
     }
 
@@ -684,6 +687,9 @@ impl App {
 
         match self.focus {
             Focus::Tree => {
+                if self.handle_jump_key(code, modifiers) {
+                    return Ok(());
+                }
                 self.handle_normal_key(code, modifiers, terminal)?;
                 // After tree navigation, sync note editor if selection changed
                 self.sync_note_editor();
@@ -691,6 +697,116 @@ impl App {
             Focus::Notes => self.handle_notes_key(code, modifiers, terminal)?,
         }
         Ok(())
+    }
+
+    fn handle_jump_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let no_mods = modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        match (code, no_mods) {
+            (KeyCode::Char('g'), true) if self.jump_to_top_pending => {
+                self.jump_to_top_pending = false;
+                self.jump_to_tree_edge(false);
+                self.sync_note_editor();
+                true
+            }
+            (KeyCode::Char('g'), true) => {
+                self.jump_to_top_pending = true;
+                true
+            }
+            (KeyCode::Char('G'), true) => {
+                self.jump_to_top_pending = false;
+                self.jump_to_tree_edge(true);
+                self.sync_note_editor();
+                true
+            }
+            _ => {
+                self.jump_to_top_pending = false;
+                false
+            }
+        }
+    }
+
+    fn handle_agents_jump_key(&mut self, code: KeyCode, modifiers: KeyModifiers, agent_count: usize) -> bool {
+        let no_mods = modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        match (code, no_mods) {
+            (KeyCode::Char('g'), true) if self.jump_to_top_pending => {
+                self.jump_to_top_pending = false;
+                self.agent_list_cursor = 0;
+                true
+            }
+            (KeyCode::Char('g'), true) => {
+                self.jump_to_top_pending = true;
+                true
+            }
+            (KeyCode::Char('G'), true) => {
+                self.jump_to_top_pending = false;
+                self.agent_list_cursor = agent_count.saturating_sub(1);
+                true
+            }
+            _ => {
+                self.jump_to_top_pending = false;
+                false
+            }
+        }
+    }
+
+    fn jump_to_tree_edge(&mut self, end: bool) {
+        let paths = self.visible_tree_paths();
+        if let Some(path) = if end { paths.last() } else { paths.first() } {
+            self.tree_state.select(path.clone());
+        }
+    }
+
+    fn visible_tree_paths(&self) -> Vec<Vec<String>> {
+        let mut paths = Vec::new();
+        for col in &self.state.collections {
+            if col.is_root {
+                continue;
+            }
+            let col_path = vec![col.id.to_string()];
+            paths.push(col_path.clone());
+            if self.tree_state.opened().contains(&col_path) {
+                for thread in &col.threads {
+                    let thread_path = vec![col.id.to_string(), thread.id.to_string()];
+                    paths.push(thread_path.clone());
+                    if self.tree_state.opened().contains(&thread_path) {
+                        self.push_visible_thread_children(&mut paths, &thread_path, thread.id);
+                    }
+                }
+            }
+        }
+        for col in &self.state.collections {
+            if !col.is_root {
+                continue;
+            }
+            for thread in &col.threads {
+                let thread_path = vec![thread.id.to_string()];
+                paths.push(thread_path.clone());
+                if self.tree_state.opened().contains(&thread_path) {
+                    self.push_visible_thread_children(&mut paths, &thread_path, thread.id);
+                }
+            }
+        }
+        paths
+    }
+
+    fn push_visible_thread_children(&self, paths: &mut Vec<Vec<String>>, thread_path: &[String], thread_id: uuid::Uuid) {
+        for session in self.state.active_sessions.iter().filter(|s| s.thread_id == thread_id) {
+            let mut session_path = thread_path.to_vec();
+            session_path.push(session.tmux_session_name.clone());
+            paths.push(session_path.clone());
+            if self.tree_state.opened().contains(&session_path) {
+                for agent in self.state.agents_for_session(&session.tmux_session_name) {
+                    let mut agent_path = session_path.clone();
+                    agent_path.push(agent.pane_id.clone());
+                    paths.push(agent_path);
+                }
+            }
+        }
+        for worktree in self.state.worktrees_for_thread(thread_id) {
+            let mut worktree_path = thread_path.to_vec();
+            worktree_path.push(worktree.tmux_session_name.clone());
+            paths.push(worktree_path);
+        }
     }
 
     fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
@@ -750,6 +866,10 @@ impl App {
 
     fn handle_agents_view_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
         let agents = self.state.all_agents_flat();
+
+        if self.handle_agents_jump_key(code, modifiers, agents.len()) {
+            return Ok(());
+        }
 
         let current_pane_id = agents
             .get(self.agent_list_cursor)
