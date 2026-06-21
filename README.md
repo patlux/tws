@@ -46,6 +46,27 @@ Press `/` to search across all active sessions by name or path, sorted by most-r
 
 Keys `1`–`5` attach to the five most-recently-attached sessions instantly — useful for hopping between two or three active workstreams without leaving the keyboard home row.
 
+### Start directories
+
+Optional `[[start_dirs]]` config entries choose the working directory for new normal sessions. Thread-specific entries override collection-level defaults. Root-level threads omit `collection`.
+
+```toml
+[[start_dirs]]
+collection = "Personal"
+path = "~/dev/Personal"
+
+[[start_dirs]]
+collection = "Personal"
+thread = "tws"
+path = "~/dev/Personal/thirdparty/tws"
+
+[[start_dirs]]
+thread = "scratch"
+path = "~/tmp/scratch"
+```
+
+With this config, sessions created under `Personal / tws` start in `~/dev/Personal/thirdparty/tws`, other `Personal` threads start in `~/dev/Personal`, and the root-level `scratch` thread starts in `~/tmp/scratch`. Paths must resolve to existing absolute directories. `~` is expanded. Worktree entries still use their own worktree path.
+
 ### Git worktrees
 
 Optional `[[worktrees]]` config entries show Git worktrees as launchable sessions under a thread. Worktrees are rendered dimmed until they are running. Press `Enter` on one to create a tmux session in that worktree's directory and attach to it.

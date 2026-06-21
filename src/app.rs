@@ -18,7 +18,7 @@ use crate::core::persistence;
 use crate::core::model::{WorktreeSession, slugify};
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::event;
-use crate::config::WorktreeConfig;
+use crate::config::{self, StartDirConfig, WorktreeConfig};
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::git::worktrees::{self, DiscoverOptions};
 use crate::theme::{Theme, NoteStyleSheet};
@@ -148,6 +148,8 @@ pub struct App {
     theme: Theme,
     /// Key bindings (user-configurable).
     keymap: Keymap,
+    /// Start-directory defaults loaded from config.toml.
+    start_dir_configs: Vec<StartDirConfig>,
     /// Git worktree integrations loaded from config.toml.
     worktree_configs: Vec<WorktreeConfig>,
     /// Pins loaded from UiState waiting to be reapplied at first scan.
@@ -182,7 +184,14 @@ fn short_head(head: &str) -> &str {
 }
 
 impl App {
-    pub fn new(state: AppState, theme: Theme, note_stylesheet: NoteStyleSheet, keymap: Keymap, worktree_configs: Vec<WorktreeConfig>) -> Self {
+    pub fn new(
+        state: AppState,
+        theme: Theme,
+        note_stylesheet: NoteStyleSheet,
+        keymap: Keymap,
+        start_dir_configs: Vec<StartDirConfig>,
+        worktree_configs: Vec<WorktreeConfig>,
+    ) -> Self {
         Self {
             state,
             tree_state: TreeState::default(),
@@ -202,6 +211,7 @@ impl App {
             agent_list_cursor: 0,
             theme,
             keymap,
+            start_dir_configs,
             worktree_configs,
             pending_pin_restore: Vec::new(),
             pin_assign_pending: None,
@@ -1472,8 +1482,19 @@ impl App {
                 }
                 InputPurpose::NewSession { col_idx, thread_idx } => {
                     if let Some(session_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
+                        let start_dir = match self.resolve_start_dir(col_idx, thread_idx) {
+                            Ok(dir) => dir,
+                            Err(msg) => {
+                                self.set_flash(&msg);
+                                return Ok(());
+                            }
+                        };
                         self.save_state();
-                        self.launch_session(&session_name, terminal)?;
+                        if let Some(cwd) = start_dir {
+                            self.launch_session_in_dir(&session_name, cwd, terminal)?;
+                        } else {
+                            self.launch_session(&session_name, terminal)?;
+                        }
                         self.set_flash("Session launched");
                     }
                 }
@@ -1629,6 +1650,41 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Resolve the configured start directory for a new ordinary session.
+    fn resolve_start_dir(
+        &self,
+        col_idx: usize,
+        thread_idx: usize,
+    ) -> Result<Option<PathBuf>, String> {
+        let Some(col) = self.state.collections.get(col_idx) else {
+            return Ok(None);
+        };
+        let Some(thread) = col.threads.get(thread_idx) else {
+            return Ok(None);
+        };
+        let collection = if col.is_root {
+            None
+        } else {
+            Some(col.name.as_str())
+        };
+        let Some(spec) = config::resolve_start_dir(
+            &self.start_dir_configs,
+            collection,
+            &thread.name,
+        ) else {
+            return Ok(None);
+        };
+
+        let path = expand_home(spec);
+        if !path.is_absolute() {
+            return Err(format!("Start dir must be absolute: {}", spec));
+        }
+        if !path.is_dir() {
+            return Err(format!("Start dir missing: {}", path.display()));
+        }
+        Ok(Some(path))
     }
 
     /// Launch a new tmux session with the given name and attach to it.

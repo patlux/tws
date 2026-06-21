@@ -17,7 +17,19 @@ pub struct Config {
     pub theme: Option<String>,
     pub palette: Option<PaletteOverride>,
     pub keys: Option<KeysConfig>,
+    pub start_dirs: Vec<StartDirConfig>,
     pub worktrees: Vec<WorktreeConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct StartDirConfig {
+    /// Optional collection name. Omit for root-level threads.
+    pub collection: Option<String>,
+    /// Optional thread name. Omit to set a collection/root default.
+    pub thread: Option<String>,
+    /// Directory used as tmux `new-session -c` for matching sessions.
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -30,6 +42,32 @@ pub struct WorktreeConfig {
     pub include_main: Option<bool>,
     pub include_detached: Option<bool>,
     pub skip_prunable: Option<bool>,
+}
+
+/// Resolve the configured start directory for a collection/thread pair.
+///
+/// `collection = None` addresses root-level threads. Thread-specific entries
+/// win over collection/root defaults. Later entries win within the same
+/// specificity, matching common config override behavior.
+pub fn resolve_start_dir<'a>(
+    start_dirs: &'a [StartDirConfig],
+    collection: Option<&str>,
+    thread: &str,
+) -> Option<&'a str> {
+    start_dirs
+        .iter()
+        .rev()
+        .find(|cfg| {
+            cfg.collection.as_deref() == collection
+                && cfg.thread.as_deref() == Some(thread)
+        })
+        .or_else(|| {
+            start_dirs
+                .iter()
+                .rev()
+                .find(|cfg| cfg.collection.as_deref() == collection && cfg.thread.is_none())
+        })
+        .map(|cfg| cfg.path.as_str())
 }
 
 impl WorktreeConfig {
@@ -163,6 +201,105 @@ mod tests {
         assert!(config.theme.is_none());
         assert!(config.palette.is_none());
         assert!(config.keys.is_none());
+        assert!(config.start_dirs.is_empty());
+    }
+
+    #[test]
+    fn parse_start_dir_config() {
+        let toml_str = r##"
+            [[start_dirs]]
+            collection = "Personal"
+            path = "~/dev/Personal"
+
+            [[start_dirs]]
+            collection = "Personal"
+            thread = "tws"
+            path = "~/dev/Personal/thirdparty/tws"
+
+            [[start_dirs]]
+            thread = "scratch"
+            path = "~/tmp/scratch"
+        "##;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.start_dirs.len(), 3);
+        assert_eq!(config.start_dirs[0].collection.as_deref(), Some("Personal"));
+        assert_eq!(config.start_dirs[0].thread.as_deref(), None);
+        assert_eq!(config.start_dirs[0].path, "~/dev/Personal");
+        assert_eq!(config.start_dirs[1].thread.as_deref(), Some("tws"));
+        assert_eq!(config.start_dirs[2].collection.as_deref(), None);
+        assert_eq!(config.start_dirs[2].thread.as_deref(), Some("scratch"));
+    }
+
+    #[test]
+    fn resolve_start_dir_prefers_thread_over_collection() {
+        let config: Config = toml::from_str(r##"
+            [[start_dirs]]
+            collection = "Personal"
+            path = "~/dev/Personal"
+
+            [[start_dirs]]
+            collection = "Personal"
+            thread = "tws"
+            path = "~/dev/Personal/thirdparty/tws"
+        "##).unwrap();
+
+        assert_eq!(
+            resolve_start_dir(&config.start_dirs, Some("Personal"), "tws"),
+            Some("~/dev/Personal/thirdparty/tws")
+        );
+        assert_eq!(
+            resolve_start_dir(&config.start_dirs, Some("Personal"), "other"),
+            Some("~/dev/Personal")
+        );
+        assert_eq!(
+            resolve_start_dir(&config.start_dirs, Some("Work"), "tws"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_start_dir_supports_root_threads() {
+        let config: Config = toml::from_str(r##"
+            [[start_dirs]]
+            path = "~/tmp/root-default"
+
+            [[start_dirs]]
+            thread = "scratch"
+            path = "~/tmp/scratch"
+        "##).unwrap();
+
+        assert_eq!(
+            resolve_start_dir(&config.start_dirs, None, "scratch"),
+            Some("~/tmp/scratch")
+        );
+        assert_eq!(
+            resolve_start_dir(&config.start_dirs, None, "general"),
+            Some("~/tmp/root-default")
+        );
+        assert_eq!(
+            resolve_start_dir(&config.start_dirs, Some("Personal"), "scratch"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_start_dir_later_entries_override() {
+        let config: Config = toml::from_str(r##"
+            [[start_dirs]]
+            collection = "Personal"
+            thread = "tws"
+            path = "~/old"
+
+            [[start_dirs]]
+            collection = "Personal"
+            thread = "tws"
+            path = "~/new"
+        "##).unwrap();
+
+        assert_eq!(
+            resolve_start_dir(&config.start_dirs, Some("Personal"), "tws"),
+            Some("~/new")
+        );
     }
 
     #[test]
