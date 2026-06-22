@@ -16,6 +16,7 @@ pub enum Action {
     Delete,
     KillSession,
     Finder,
+    Help,
     ExpandAll,
     ToggleSelect,
     Deselect,
@@ -123,6 +124,7 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "delete" => Ok(Action::Delete),
         "kill_session" => Ok(Action::KillSession),
         "finder" => Ok(Action::Finder),
+        "help" => Ok(Action::Help),
         "expand_all" => Ok(Action::ExpandAll),
         "toggle_select" => Ok(Action::ToggleSelect),
         "deselect" => Ok(Action::Deselect),
@@ -217,6 +219,7 @@ impl Keymap {
         bind!(M::Normal, KeyCode::Char('H'), KeyModifiers::SHIFT, A::Hide);
         bind!(M::Normal, KeyCode::Char('u'), KeyModifiers::NONE,  A::ShowHidden);
         bind!(M::Normal, KeyCode::Char('/'), KeyModifiers::NONE,  A::Finder);
+        bind!(M::Normal, KeyCode::Char('?'), KeyModifiers::NONE,  A::Help);
         bind!(M::Normal, KeyCode::Char('e'), KeyModifiers::NONE,  A::ExpandAll);
         bind!(M::Normal, KeyCode::Char('1'), KeyModifiers::NONE,  A::RecentSession1);
         bind!(M::Normal, KeyCode::Char('2'), KeyModifiers::NONE,  A::RecentSession2);
@@ -379,6 +382,7 @@ mod tests {
         assert_eq!(parse_action("add_collection").unwrap(), Action::AddCollection);
         assert_eq!(parse_action("kill_session").unwrap(), Action::KillSession);
         assert_eq!(parse_action("toggle_view").unwrap(), Action::ToggleView);
+        assert_eq!(parse_action("help").unwrap(), Action::Help);
         assert_eq!(parse_action("hide").unwrap(), Action::Hide);
         assert_eq!(parse_action("show_hidden").unwrap(), Action::ShowHidden);
         assert_eq!(parse_action("open_editor").unwrap(), Action::OpenEditor);
@@ -408,6 +412,13 @@ mod tests {
         assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('j'), KeyModifiers::NONE), Some(Action::MoveDown));
         assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Down, KeyModifiers::NONE), Some(Action::MoveDown));
         assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('k'), KeyModifiers::NONE), Some(Action::MoveUp));
+    }
+
+    #[test]
+    fn default_keymap_normal_help() {
+        let km = Keymap::default_bindings();
+        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('?'), KeyModifiers::NONE), Some(Action::Help));
+        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('?'), KeyModifiers::SHIFT), Some(Action::Help));
     }
 
     #[test]
