@@ -1,15 +1,22 @@
-use ratatui::style::Modifier;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use tui_tree_widget::TreeItem;
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
+use tui_tree_widget::{TreeItem, TreeState};
 
 use crate::core::model::Thread;
-use crate::core::state::AppState;
+use crate::core::state::{AppState, SelectedItem};
 use crate::theme::Theme;
 
 /// Converts the app state into TreeItems for rendering.
 /// Collections -> Threads -> Sessions (3-level hierarchy).
 /// Root threads (from the root collection) render at root level, not nested under a collection node.
-pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<'a, String>> {
+pub fn build_tree_items<'a>(
+    state: &'a AppState,
+    theme: &Theme,
+    deleting_label: &dyn Fn(&str) -> Option<String>,
+) -> Vec<TreeItem<'a, String>> {
     let mut items: Vec<TreeItem<'a, String>> = Vec::new();
 
     // Regular collections first
@@ -21,7 +28,7 @@ pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<
             .threads
             .iter()
             .filter(|thread| !thread.hidden)
-            .map(|thread| build_thread_item(state, thread, theme))
+            .map(|thread| build_thread_item(state, thread, theme, deleting_label))
             .collect();
 
         items.push(
@@ -41,7 +48,7 @@ pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<
         }
         for thread in &col.threads {
             if !thread.hidden {
-                items.push(build_thread_item(state, thread, theme));
+                items.push(build_thread_item(state, thread, theme, deleting_label));
             }
         }
     }
@@ -49,11 +56,96 @@ pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<
     items
 }
 
+/// Render worktree status icons in the tree's symbol column.
+///
+/// `tui-tree-widget` only has one global no-children symbol, so worktree icons are
+/// overlaid after the tree is rendered. This keeps worktree labels aligned with
+/// regular session labels while drawing `◌`/`✕` where `›`/`⌄` would appear.
+pub fn render_worktree_icons(
+    frame: &mut Frame<'_>,
+    app_state: &AppState,
+    tree_state: &TreeState<String>,
+    items: &[TreeItem<'_, String>],
+    area: Rect,
+    theme: &Theme,
+    highlight_style: Style,
+    deleting_label: &dyn Fn(&str) -> Option<String>,
+    deleting_icon: &str,
+    is_marked: &dyn Fn(&str) -> bool,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let visible = tree_state.flatten(items);
+    let mut y_offset = 0u16;
+
+    for flattened in visible.iter().skip(tree_state.get_offset()) {
+        let height = flattened.item.height() as u16;
+        if y_offset.saturating_add(height) > area.height {
+            break;
+        }
+
+        if let Some(item_name) = flattened.identifier.last() {
+            let deleting = deleting_label(item_name).is_some();
+            let worktree = app_state.find_worktree_by_tmux_name(item_name);
+            let is_worktree_row = matches!(
+                app_state.resolve_selection(&flattened.identifier),
+                SelectedItem::Worktree(..)
+            );
+
+            let icon = if deleting {
+                Some((deleting_icon, theme.worktree_meta))
+            } else if is_marked(item_name) {
+                Some(("✓ ", theme.flash))
+            } else if is_worktree_row {
+                worktree.map(|w| {
+                    if w.launchable {
+                        ("◌ ", theme.worktree_meta)
+                    } else {
+                        ("✕ ", theme.worktree_prunable)
+                    }
+                })
+            } else {
+                None
+            };
+
+            if let Some((icon, unselected_style)) = icon {
+                let style = if tree_state.selected() == flattened.identifier.as_slice() {
+                    highlight_style
+                } else {
+                    unselected_style
+                };
+                let highlight_width = if tree_state.selected().is_empty() { 0 } else { 2 };
+                let x_offset = highlight_width + (flattened.depth() as u16 * 2);
+                if x_offset < area.width {
+                    let icon_area = Rect {
+                        x: area.x + x_offset,
+                        y: area.y + y_offset,
+                        width: area.width.saturating_sub(x_offset).min(2),
+                        height: 1,
+                    };
+                    frame.render_widget(
+                        Paragraph::new(Line::from(Span::styled(icon, style))),
+                        icon_area,
+                    );
+                }
+            }
+        }
+
+        y_offset = y_offset.saturating_add(height);
+        if y_offset >= area.height {
+            break;
+        }
+    }
+}
+
 /// Build a TreeItem for a single thread (shared between regular and root threads).
 fn build_thread_item<'a>(
     state: &'a AppState,
     thread: &'a Thread,
     theme: &Theme,
+    deleting_label: &dyn Fn(&str) -> Option<String>,
 ) -> TreeItem<'a, String> {
     let mut session_children: Vec<TreeItem<'a, String>> = state
         .active_sessions
@@ -62,9 +154,13 @@ fn build_thread_item<'a>(
         .map(|s| {
             let agents = state.agents_for_session(&s.tmux_session_name);
             if agents.is_empty() {
+                let deleting = deleting_label(&s.tmux_session_name);
+                let is_deleting = deleting.is_some();
+                let display_name = deleting.unwrap_or_else(|| s.display_name.clone());
+                let style = if is_deleting { theme.worktree_meta } else { theme.session };
                 TreeItem::new_leaf(
                     s.tmux_session_name.clone(),
-                    Text::styled(&s.display_name, theme.session),
+                    Text::styled(display_name, style),
                 )
             } else {
                 let agent_children: Vec<TreeItem<'a, String>> = agents
@@ -81,9 +177,13 @@ fn build_thread_item<'a>(
                         )
                     })
                     .collect();
+                let deleting = deleting_label(&s.tmux_session_name);
+                let is_deleting = deleting.is_some();
+                let display_name = deleting.unwrap_or_else(|| s.display_name.clone());
+                let style = if is_deleting { theme.worktree_meta } else { theme.session };
                 TreeItem::new(
                     s.tmux_session_name.clone(),
-                    Text::styled(&s.display_name, theme.session),
+                    Text::styled(display_name, style),
                     agent_children,
                 )
                 .expect("pane IDs are unique within a session")
@@ -92,15 +192,16 @@ fn build_thread_item<'a>(
         .collect();
 
     for worktree in state.worktrees_for_thread(thread.id) {
-        let (icon, name_style) = if worktree.launchable {
-            ("◌ ", theme.worktree)
+        let deleting = deleting_label(&worktree.tmux_session_name);
+        let name_style = if deleting.is_some() {
+            theme.worktree_meta
+        } else if worktree.launchable {
+            theme.worktree
         } else {
-            ("✕ ", theme.worktree_prunable)
+            theme.worktree_prunable
         };
-        let mut spans = vec![
-            Span::styled(icon, theme.worktree_meta),
-            Span::styled(&worktree.display_name, name_style),
-        ];
+        let display_name = deleting.as_deref().unwrap_or(&worktree.display_name);
+        let mut spans = vec![Span::styled(display_name.to_string(), name_style)];
         if let Some(branch) = &worktree.branch {
             spans.push(Span::styled("  ", theme.worktree_meta));
             spans.push(Span::styled(branch_display_name(branch), theme.worktree_meta));

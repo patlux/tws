@@ -437,12 +437,15 @@ impl AppState {
     }
 
     /// Get all launchable worktree sessions belonging to a given thread, excluding already-active tmux sessions.
+    /// Mainline branch names are listed first (main, master, dev, develop), followed by the rest alphabetically.
     pub fn worktrees_for_thread(&self, thread_id: Uuid) -> Vec<&WorktreeSession> {
-        self.worktree_sessions
+        let mut worktrees: Vec<&WorktreeSession> = self.worktree_sessions
             .iter()
             .filter(|w| w.thread_id == thread_id)
             .filter(|w| !self.active_sessions.iter().any(|s| s.tmux_session_name == w.tmux_session_name))
-            .collect()
+            .collect();
+        worktrees.sort_by_key(|w| worktree_sort_key(w));
+        worktrees
     }
 
     pub fn find_worktree_by_tmux_name(&self, session_name: &str) -> Option<&WorktreeSession> {
@@ -678,6 +681,34 @@ impl AppState {
         });
         result
     }
+}
+
+fn worktree_sort_key(worktree: &WorktreeSession) -> (u8, String, String) {
+    let name = worktree_sort_name(worktree);
+    let rank = match name.as_str() {
+        "main" => 0,
+        "master" => 1,
+        "dev" => 2,
+        "develop" => 3,
+        _ => 4,
+    };
+    (rank, name, worktree.path.to_string_lossy().into_owned())
+}
+
+fn worktree_sort_name(worktree: &WorktreeSession) -> String {
+    worktree
+        .branch
+        .as_deref()
+        .map(short_branch_name)
+        .unwrap_or(&worktree.display_name)
+        .to_ascii_lowercase()
+}
+
+fn short_branch_name(branch: &str) -> &str {
+    branch
+        .strip_prefix("refs/heads/")
+        .or_else(|| branch.strip_prefix("refs/remotes/"))
+        .unwrap_or(branch)
 }
 
 #[cfg(test)]
@@ -1001,10 +1032,12 @@ mod tests {
             tmux_session_name: "tws_work_edge-device-pipeline_feature-x".into(),
             display_name: "feature-x".into(),
             thread_id,
+            repo: std::path::PathBuf::from("/tmp/repo"),
             path: std::path::PathBuf::from("/tmp/feature-x"),
             branch: Some("refs/heads/feature/x".into()),
             head: Some("abcdef123456".into()),
             prunable: false,
+            is_main: false,
             path_exists: true,
             launchable: true,
         }]);
@@ -1029,10 +1062,12 @@ mod tests {
             tmux_session_name: "tws_work_edge-device-pipeline_feature-x".into(),
             display_name: "feature-x".into(),
             thread_id,
+            repo: std::path::PathBuf::from("/tmp/repo"),
             path: std::path::PathBuf::from("/tmp/feature-x"),
             branch: Some("refs/heads/feature/x".into()),
             head: Some("abcdef123456".into()),
             prunable: false,
+            is_main: false,
             path_exists: true,
             launchable: true,
         }]);
@@ -1040,6 +1075,40 @@ mod tests {
 
         state.refresh_sessions(&[("tws_work_edge-device-pipeline_feature-x".into(), 0)]);
         assert!(state.worktrees_for_thread(thread_id).is_empty());
+    }
+
+    #[test]
+    fn worktrees_for_thread_sorts_mainlines_then_alphabetically() {
+        let mut state = AppState::with_sample_data();
+        let thread_id = state.collections[0].threads[0].id;
+        let make_worktree = |name: &str, branch: &str| WorktreeSession {
+            tmux_session_name: format!("tws_work_edge-device-pipeline_{}", name),
+            display_name: name.into(),
+            thread_id,
+            repo: std::path::PathBuf::from("/tmp/repo"),
+            path: std::path::PathBuf::from(format!("/tmp/{}", name)),
+            branch: Some(format!("refs/heads/{}", branch)),
+            head: Some("abcdef123456".into()),
+            prunable: false,
+            is_main: false,
+            path_exists: true,
+            launchable: true,
+        };
+        state.refresh_worktree_sessions(vec![
+            make_worktree("zeta", "zeta"),
+            make_worktree("develop", "develop"),
+            make_worktree("main", "main"),
+            make_worktree("alpha", "alpha"),
+            make_worktree("dev", "dev"),
+            make_worktree("master", "master"),
+        ]);
+
+        let names: Vec<&str> = state
+            .worktrees_for_thread(thread_id)
+            .iter()
+            .map(|w| w.display_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["main", "master", "dev", "develop", "alpha", "zeta"]);
     }
 
     #[test]

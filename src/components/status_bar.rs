@@ -13,7 +13,9 @@ pub enum StatusContext {
     NormalCollection,
     NormalThread,
     NormalSession,
+    NormalMarkedSessions { count: usize },
     NormalWorktree,
+    NormalWorktreeSession,
     NormalAgent,
     Notes,
     Input,
@@ -73,14 +75,31 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
             (keymap.key_hint(KeyMode::Normal, Action::Enter),          "attach"),
             (keymap.key_hint(KeyMode::Normal, Action::Rename),         "rename"),
             (keymap.key_hint(KeyMode::Normal, Action::Move),           "move"),
+            (keymap.key_hint(KeyMode::Normal, Action::MarkSession),    "mark"),
             (keymap.key_hint(KeyMode::Normal, Action::KillSession),    "kill"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
             ("Tab".to_string(),                                        "notes"),
+        ],
+        StatusContext::NormalMarkedSessions { count } => vec![
+            (format!("{} selected", count),                            ""),
+            (keymap.key_hint(KeyMode::Normal, Action::MarkSession),     "toggle"),
+            (keymap.key_hint(KeyMode::Normal, Action::ClearMarks),      "clear"),
+            (keymap.key_hint(KeyMode::Normal, Action::KillSession),     "kill selected"),
+            (keymap.key_hint(KeyMode::Normal, Action::Finder),          "find"),
         ],
         StatusContext::NormalWorktree => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
             (keymap.key_hint(KeyMode::Normal, Action::Enter),          "launch"),
             (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete"),
+            (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
+            ("Tab".to_string(),                                        "notes"),
+        ],
+        StatusContext::NormalWorktreeSession => vec![
+            (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
+            (keymap.key_hint(KeyMode::Normal, Action::Enter),          "attach"),
+            (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete worktree"),
+            (keymap.key_hint(KeyMode::Normal, Action::MarkSession),    "mark"),
+            (keymap.key_hint(KeyMode::Normal, Action::KillSession),    "kill+delete"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
             ("Tab".to_string(),                                        "notes"),
         ],
@@ -143,8 +162,10 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
                 left_spans.push(Span::styled("   ", theme.statusbar_desc));
             }
             left_spans.push(Span::styled(key.clone(), theme.statusbar_key));
-            left_spans.push(Span::styled(" · ", theme.statusbar_desc));
-            left_spans.push(Span::styled(*desc, theme.statusbar_desc));
+            if !desc.is_empty() {
+                left_spans.push(Span::styled(" · ", theme.statusbar_desc));
+                left_spans.push(Span::styled(*desc, theme.statusbar_desc));
+            }
         }
     }
 

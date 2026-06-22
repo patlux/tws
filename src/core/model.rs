@@ -39,10 +39,12 @@ pub struct WorktreeSession {
     pub tmux_session_name: String,
     pub display_name: String,
     pub thread_id: Uuid,
+    pub repo: PathBuf,
     pub path: PathBuf,
     pub branch: Option<String>,
     pub head: Option<String>,
     pub prunable: bool,
+    pub is_main: bool,
     pub path_exists: bool,
     pub launchable: bool,
 }

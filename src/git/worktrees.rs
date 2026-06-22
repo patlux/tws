@@ -61,10 +61,10 @@ pub fn discover(repo: &Path, options: DiscoverOptions) -> std::io::Result<Vec<Di
     Ok(parse_porcelain(&String::from_utf8_lossy(&output.stdout), options))
 }
 
-pub fn remove(path: &Path) -> Result<(), String> {
+pub fn remove(repo: &Path, path: &Path) -> Result<(), String> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(path)
+        .arg(repo)
         .args(["worktree", "remove"])
         .arg(path)
         .output()
