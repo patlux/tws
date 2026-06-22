@@ -20,6 +20,8 @@ pub enum StatusContext {
     Notes,
     Input,
     Confirm,
+    Error,
+    Help,
     Finder,
     ThreadPicker,
     AgentsView,
@@ -43,6 +45,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
             (keymap.key_hint(KeyMode::Normal, Action::Enter),          "quick session"),
             (keymap.key_hint(KeyMode::Normal, Action::Add),            "add thread"),
             (keymap.key_hint(KeyMode::Normal, Action::AddCollection),  "add collection"),
+            (keymap.key_hint(KeyMode::Normal, Action::ShowHidden),     "show hidden"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
             (keymap.key_hint(KeyMode::Normal, Action::ExpandAll),      "toggle all"),
         ],
@@ -51,6 +54,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
             (keymap.key_hint(KeyMode::Normal, Action::ToggleSelect),   "toggle"),
             (keymap.key_hint(KeyMode::Normal, Action::Add),            "add thread"),
             (keymap.key_hint(KeyMode::Normal, Action::Rename),         "rename"),
+            (keymap.key_hint(KeyMode::Normal, Action::Hide),           "hide"),
             (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
             ("Tab".to_string(),                                        "notes"),
@@ -60,6 +64,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
             (keymap.key_hint(KeyMode::Normal, Action::Enter),          "new session"),
             (keymap.key_hint(KeyMode::Normal, Action::Add),            "add thread"),
             (keymap.key_hint(KeyMode::Normal, Action::Rename),         "rename"),
+            (keymap.key_hint(KeyMode::Normal, Action::Hide),           "hide"),
             (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete"),
             (keymap.key_hint(KeyMode::Normal, Action::KillSession),    "kill sessions"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
@@ -116,6 +121,12 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         StatusContext::Confirm => vec![
             (keymap.key_hint(KeyMode::ConfirmModal, Action::Confirm), "confirm"),
             (keymap.key_hint(KeyMode::ConfirmModal, Action::Cancel),  "cancel"),
+        ],
+        StatusContext::Error => vec![
+            ("Enter/Esc".to_string(), "close"),
+        ],
+        StatusContext::Help => vec![
+            ("?/Enter/Esc/q".to_string(), "close help"),
         ],
         StatusContext::Finder => vec![
             (keymap.key_hint(KeyMode::Finder, Action::Confirm),                                "attach"),

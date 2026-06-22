@@ -9,6 +9,8 @@ pub struct Collection {
     pub name: String,
     #[serde(default)]
     pub is_root: bool,
+    #[serde(default)]
+    pub hidden: bool,
     pub threads: Vec<Thread>,
 }
 
@@ -17,6 +19,8 @@ pub struct Thread {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// Runtime-only, never serialized. Represents a live tmux session.
@@ -92,6 +96,7 @@ impl Collection {
             id: Uuid::new_v4(),
             name: name.into(),
             is_root: false,
+            hidden: false,
             threads: Vec::new(),
         }
     }
@@ -101,6 +106,7 @@ impl Collection {
             id: Uuid::new_v4(),
             name: String::new(),
             is_root: true,
+            hidden: false,
             threads: Vec::new(),
         }
     }
@@ -112,6 +118,7 @@ impl Thread {
             id: Uuid::new_v4(),
             name: name.into(),
             description: None,
+            hidden: false,
         }
     }
 }
@@ -195,9 +202,21 @@ mod tests {
     }
 
     #[test]
+    fn collection_starts_visible() {
+        let c = Collection::new("Test");
+        assert!(!c.hidden);
+    }
+
+    #[test]
     fn thread_description_defaults_to_none() {
         let p = Thread::new("Test");
         assert!(p.description.is_none());
+    }
+
+    #[test]
+    fn thread_starts_visible() {
+        let p = Thread::new("Test");
+        assert!(!p.hidden);
     }
 
     #[test]

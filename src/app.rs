@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{agent_preview, agents_view, confirm_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
+use crate::components::{agent_preview, agents_view, confirm_modal, error_modal, finder_modal, help_modal, input_modal, notes_sidebar, recent_bar, tree_view};
 use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
@@ -130,6 +130,10 @@ enum Mode {
     Confirm {
         purpose: ConfirmPurpose,
     },
+    Error {
+        message: String,
+    },
+    Help,
     Finder {
         state: FinderState,
     },
@@ -307,6 +311,17 @@ impl App {
         });
     }
 
+    fn set_error(&mut self, msg: impl Into<String>) {
+        let message = msg.into();
+        let message = if message.trim().is_empty() {
+            "Unknown error".to_string()
+        } else {
+            message
+        };
+        self.flash = None;
+        self.mode = Mode::Error { message };
+    }
+
     fn worktree_spinner_frame(&self) -> &'static str {
         let ticks = self.animation_start.elapsed().as_millis() / 180;
         DELETE_SPINNER[(ticks as usize) % DELETE_SPINNER.len()]
@@ -432,6 +447,7 @@ impl App {
         // Restore last selection
         if let Some(sel) = ui_state.selected {
             self.tree_state.select(sel);
+            self.ensure_visible_tree_selection();
         }
         // Restore view mode and agents cursor
         if ui_state.agents_view_active {
@@ -473,6 +489,8 @@ impl App {
                     }
                     Mode::Input { .. } => self.handle_input_key(key.code, key.modifiers, terminal)?,
                     Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
+                    Mode::Error { .. } => self.handle_error_key(key.code, key.modifiers),
+                    Mode::Help => self.handle_help_key(key.code),
                     Mode::Finder { .. } => {
                         self.handle_finder_key(key.code, key.modifiers, terminal)?
                     }
@@ -526,6 +544,16 @@ impl App {
         };
         let recent_count = recent_data.len() as u16;
         let show_recent = !recent_data.is_empty();
+        let hidden_count = self.state.hidden_count();
+        let empty_hint = if hidden_count > 0 {
+            format!(
+                "{} hidden. Press {} to show all hidden collections and threads.",
+                hidden_count,
+                self.keymap.key_hint(KeyMode::Normal, Action::ShowHidden),
+            )
+        } else {
+            "Press Enter for a quick session, or a to add a thread.".to_string()
+        };
 
         // Pre-compute flat agents list for agents view mode.
         let flat_agents: Vec<FlatAgent> = if matches!(self.view_mode, ViewMode::Agents) {
@@ -650,7 +678,7 @@ impl App {
                     ]));
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
-                        "Press Enter for a quick session, or a to add a thread.",
+                        empty_hint.as_str(),
                         self.theme.empty_hint,
                     )));
 
@@ -755,6 +783,9 @@ impl App {
             // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
                 Mode::Normal => {}
+                Mode::Help => {
+                    help_modal::render(frame, area, &self.theme, &self.keymap);
+                }
                 Mode::Input { purpose, buffer } => {
                     let title = match purpose {
                         InputPurpose::AddCollection => "New Collection",
@@ -794,6 +825,9 @@ impl App {
                     };
                     confirm_modal::render(frame, &message, area, &self.theme);
                 }
+                Mode::Error { message } => {
+                    error_modal::render(frame, message, area, &self.theme);
+                }
                 Mode::Finder { state } => {
                     finder_modal::render(
                         frame,
@@ -832,6 +866,8 @@ impl App {
         match &self.mode {
             Mode::Input { .. } => StatusContext::Input,
             Mode::Confirm { .. } => StatusContext::Confirm,
+            Mode::Error { .. } => StatusContext::Error,
+            Mode::Help => StatusContext::Help,
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
             Mode::Normal => {
@@ -883,8 +919,12 @@ impl App {
     ) -> std::io::Result<()> {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
 
-        // Toggle between tree and agents view
+        // Global normal-mode actions that should work from tree, notes, and agents view.
         let normal_action = self.keymap.resolve(KeyMode::Normal, code, modifiers);
+        if normal_action == Some(Action::Help) {
+            self.mode = Mode::Help;
+            return Ok(());
+        }
         if normal_action == Some(Action::ToggleView) {
             match self.view_mode {
                 ViewMode::Tree => {
@@ -1002,13 +1042,16 @@ impl App {
     fn visible_tree_paths(&self) -> Vec<Vec<String>> {
         let mut paths = Vec::new();
         for col in &self.state.collections {
-            if col.is_root {
+            if col.is_root || col.hidden {
                 continue;
             }
             let col_path = vec![col.id.to_string()];
             paths.push(col_path.clone());
             if self.tree_state.opened().contains(&col_path) {
                 for thread in &col.threads {
+                    if thread.hidden {
+                        continue;
+                    }
                     let thread_path = vec![col.id.to_string(), thread.id.to_string()];
                     paths.push(thread_path.clone());
                     if self.tree_state.opened().contains(&thread_path) {
@@ -1022,6 +1065,9 @@ impl App {
                 continue;
             }
             for thread in &col.threads {
+                if thread.hidden {
+                    continue;
+                }
                 let thread_path = vec![thread.id.to_string()];
                 paths.push(thread_path.clone());
                 if self.tree_state.opened().contains(&thread_path) {
@@ -1052,6 +1098,50 @@ impl App {
         }
     }
 
+    fn next_visible_path(&self, selected: &[String]) -> Vec<String> {
+        let paths = self.visible_tree_paths();
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        if let Some(idx) = paths.iter().position(|path| path == selected) {
+            let next_idx = if idx + 1 < paths.len() {
+                idx + 1
+            } else {
+                idx.saturating_sub(1)
+            };
+            return paths[next_idx].clone();
+        }
+        paths.first().cloned().unwrap_or_default()
+    }
+
+    fn next_visible_path_after_hiding(&self, selected: &[String]) -> Vec<String> {
+        let paths = self.visible_tree_paths();
+        let Some(idx) = paths.iter().position(|path| path == selected) else {
+            return paths.first().cloned().unwrap_or_default();
+        };
+        for path in paths.iter().skip(idx + 1) {
+            if !path.as_slice().starts_with(selected) {
+                return path.clone();
+            }
+        }
+        for path in paths.iter().take(idx).rev() {
+            if !path.as_slice().starts_with(selected) {
+                return path.clone();
+            }
+        }
+        Vec::new()
+    }
+
+    fn ensure_visible_tree_selection(&mut self) {
+        if self.tree_state.selected().is_empty() {
+            return;
+        }
+        if matches!(self.state.resolve_selection(self.tree_state.selected()), SelectedItem::None) {
+            let next = self.next_visible_path(self.tree_state.selected());
+            self.tree_state.select(next);
+        }
+    }
+
     fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
         let action = match self.keymap.resolve(KeyMode::Normal, code, modifiers) {
             Some(a) => a,
@@ -1079,6 +1169,9 @@ impl App {
             Action::Move => self.start_move_session(),
             Action::MarkSession => self.toggle_mark_current_session(),
             Action::ClearMarks => self.clear_marked_sessions(),
+            Action::Hide => self.hide_selected(),
+            Action::ShowHidden => self.show_all_hidden(),
+            Action::Help => self.mode = Mode::Help,
             Action::Finder => {
                 if self.state.active_sessions.is_empty() && self.state.worktree_sessions.is_empty() {
                     self.set_flash("No sessions or worktrees");
@@ -1291,6 +1384,18 @@ impl App {
         }
     }
 
+    fn handle_error_key(&mut self, code: KeyCode, _modifiers: KeyModifiers) {
+        if matches!(code, KeyCode::Enter | KeyCode::Esc) {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    fn handle_help_key(&mut self, code: KeyCode) {
+        if matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
+            self.mode = Mode::Normal;
+        }
+    }
+
     fn start_add(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         let purpose = match selected {
@@ -1356,6 +1461,37 @@ impl App {
         let sessions = self.state.sessions_for_thread(thread_id);
         let session = sessions.get(sess_idx)?;
         self.state.find_worktree_by_tmux_name(&session.tmux_session_name)
+    }
+
+    fn hide_selected(&mut self) {
+        let selected_path = self.tree_state.selected().to_vec();
+        let fallback_path = self.next_visible_path_after_hiding(&selected_path);
+        let selected = self.state.resolve_selection(&selected_path);
+        let hidden = match selected {
+            SelectedItem::Collection(idx) => self.state.hide_collection(idx),
+            SelectedItem::Thread(col_idx, thread_idx) => self.state.hide_thread(col_idx, thread_idx),
+            SelectedItem::Session(..)
+            | SelectedItem::Worktree(..)
+            | SelectedItem::Agent(..)
+            | SelectedItem::None => false,
+        };
+        if hidden {
+            self.tree_state.select(fallback_path);
+            self.save_state();
+            self.set_flash("Hidden");
+            self.sync_note_editor();
+        }
+    }
+
+    fn show_all_hidden(&mut self) {
+        let restored = self.state.show_all_hidden();
+        if restored == 0 {
+            self.set_flash("No hidden collections or threads");
+            return;
+        }
+        self.save_state();
+        self.set_flash(&format!("Restored {} hidden", restored));
+        self.sync_note_editor();
     }
 
     fn start_delete(&mut self) {
@@ -1593,6 +1729,11 @@ impl App {
             let path = self.state.worktree_display_path(w)?;
             Some((w.tmux_session_name.clone(), format!("{}  {}", path, w.path.display())))
         }));
+
+        if entries.is_empty() {
+            self.set_flash("No visible sessions or worktrees");
+            return;
+        }
 
         self.mode = Mode::Finder {
             state: FinderState::new(entries),
@@ -1925,7 +2066,7 @@ impl App {
                         let start_dir = match self.resolve_start_dir(col_idx, thread_idx) {
                             Ok(dir) => dir,
                             Err(msg) => {
-                                self.set_flash(&msg);
+                                self.set_error(msg);
                                 return Ok(());
                             }
                         };
@@ -2370,6 +2511,9 @@ impl App {
         for col in &self.state.collections {
             if col.is_root {
                 for thread in &col.threads {
+                    if thread.hidden {
+                        continue;
+                    }
                     if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
                         all_paths.push(vec![thread.id.to_string()]);
                         // Also expand sessions that have agents
@@ -2383,8 +2527,14 @@ impl App {
                     }
                 }
             } else {
+                if col.hidden {
+                    continue;
+                }
                 all_paths.push(vec![col.id.to_string()]);
                 for thread in &col.threads {
+                    if thread.hidden {
+                        continue;
+                    }
                     if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
                         all_paths.push(vec![col.id.to_string(), thread.id.to_string()]);
                         // Also expand sessions that have agents
@@ -2426,7 +2576,11 @@ impl App {
         let open_nodes: Vec<Vec<String>> = self.tree_state.opened().iter().cloned().collect();
         let selected = {
             let sel = self.tree_state.selected();
-            if sel.is_empty() { None } else { Some(sel.to_vec()) }
+            if sel.is_empty() || matches!(self.state.resolve_selection(sel), SelectedItem::None) {
+                None
+            } else {
+                Some(sel.to_vec())
+            }
         };
         let agents_view_active = matches!(self.view_mode, ViewMode::Agents);
         let agent_list_cursor = self.agent_list_cursor;
