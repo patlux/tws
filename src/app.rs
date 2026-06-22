@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{agent_preview, agents_view, confirm_modal, error_modal, finder_modal, input_modal, notes_sidebar, recent_bar, tree_view};
+use crate::components::{agent_preview, agents_view, confirm_modal, error_modal, finder_modal, help_modal, input_modal, notes_sidebar, recent_bar, tree_view};
 use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
@@ -115,6 +115,7 @@ enum Mode {
     Error {
         message: String,
     },
+    Help,
     Finder {
         state: FinderState,
     },
@@ -294,6 +295,7 @@ impl App {
                     Mode::Input { .. } => self.handle_input_key(key.code, key.modifiers, terminal)?,
                     Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
                     Mode::Error { .. } => self.handle_error_key(key.code, key.modifiers),
+                    Mode::Help => self.handle_help_key(key.code),
                     Mode::Finder { .. } => {
                         self.handle_finder_key(key.code, key.modifiers, terminal)?
                     }
@@ -559,6 +561,9 @@ impl App {
             // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
                 Mode::Normal => {}
+                Mode::Help => {
+                    help_modal::render(frame, area, &self.theme, &self.keymap);
+                }
                 Mode::Input { purpose, buffer } => {
                     let title = match purpose {
                         InputPurpose::AddCollection => "New Collection",
@@ -629,6 +634,7 @@ impl App {
             Mode::Input { .. } => StatusContext::Input,
             Mode::Confirm { .. } => StatusContext::Confirm,
             Mode::Error { .. } => StatusContext::Error,
+            Mode::Help => StatusContext::Help,
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
             Mode::Normal => {
@@ -670,8 +676,12 @@ impl App {
     ) -> std::io::Result<()> {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
 
-        // Toggle between tree and agents view
+        // Global normal-mode actions that should work from tree, notes, and agents view.
         let normal_action = self.keymap.resolve(KeyMode::Normal, code, modifiers);
+        if normal_action == Some(Action::Help) {
+            self.mode = Mode::Help;
+            return Ok(());
+        }
         if normal_action == Some(Action::ToggleView) {
             match self.view_mode {
                 ViewMode::Tree => {
@@ -916,6 +926,7 @@ impl App {
             Action::Move => self.start_move_session(),
             Action::Hide => self.hide_selected(),
             Action::ShowHidden => self.show_all_hidden(),
+            Action::Help => self.mode = Mode::Help,
             Action::Finder => self.start_finder(),
             Action::RecentSession1 => self.attach_recent(0, terminal)?,
             Action::RecentSession2 => self.attach_recent(1, terminal)?,
@@ -1124,6 +1135,12 @@ impl App {
 
     fn handle_error_key(&mut self, code: KeyCode, _modifiers: KeyModifiers) {
         if matches!(code, KeyCode::Enter | KeyCode::Esc) {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    fn handle_help_key(&mut self, code: KeyCode) {
+        if matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
             self.mode = Mode::Normal;
         }
     }

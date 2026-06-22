@@ -19,6 +19,7 @@ pub enum StatusContext {
     Input,
     Confirm,
     Error,
+    Help,
     Finder,
     ThreadPicker,
     AgentsView,
@@ -104,6 +105,9 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         ],
         StatusContext::Error => vec![
             ("Enter/Esc".to_string(), "close"),
+        ],
+        StatusContext::Help => vec![
+            ("?/Enter/Esc/q".to_string(), "close help"),
         ],
         StatusContext::Finder => vec![
             (keymap.key_hint(KeyMode::Finder, Action::Confirm),                                "attach"),
