@@ -62,9 +62,17 @@ impl AppState {
                 let id = &selected[0];
                 // Try collection first, then root thread
                 if let Some(idx) = self.find_collection_idx(id) {
-                    SelectedItem::Collection(idx)
+                    if self.collection_is_hidden(idx) {
+                        SelectedItem::None
+                    } else {
+                        SelectedItem::Collection(idx)
+                    }
                 } else if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(id) {
-                    SelectedItem::Thread(col_idx, thread_idx)
+                    if self.thread_is_hidden(col_idx, thread_idx) {
+                        SelectedItem::None
+                    } else {
+                        SelectedItem::Thread(col_idx, thread_idx)
+                    }
                 } else {
                     SelectedItem::None
                 }
@@ -75,11 +83,17 @@ impl AppState {
                 // Try regular thread first (col_uuid + thread_uuid)
                 if let Some(col_idx) = self.find_collection_idx(first) {
                     if let Some(thread_idx) = self.find_thread_idx(col_idx, second) {
+                        if self.thread_is_hidden(col_idx, thread_idx) {
+                            return SelectedItem::None;
+                        }
                         return SelectedItem::Thread(col_idx, thread_idx);
                     }
                 }
                 // Try root session (thread_uuid + session_name)
                 if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(first) {
+                    if self.thread_is_hidden(col_idx, thread_idx) {
+                        return SelectedItem::None;
+                    }
                     let thread = &self.collections[col_idx].threads[thread_idx];
                     let sessions = self.sessions_for_thread(thread.id);
                     if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == *second) {
@@ -96,6 +110,9 @@ impl AppState {
                 // Try regular session: col / thread / session
                 if let Some(col_idx) = self.find_collection_idx(&selected[0]) {
                     if let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1]) {
+                        if self.thread_is_hidden(col_idx, thread_idx) {
+                            return SelectedItem::None;
+                        }
                         let thread = &self.collections[col_idx].threads[thread_idx];
                         let sessions = self.sessions_for_thread(thread.id);
                         if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[2]) {
@@ -110,6 +127,9 @@ impl AppState {
                 }
                 // Try root agent: thread / session / pane_id
                 if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(&selected[0]) {
+                    if self.thread_is_hidden(col_idx, thread_idx) {
+                        return SelectedItem::None;
+                    }
                     let thread = &self.collections[col_idx].threads[thread_idx];
                     let sessions = self.sessions_for_thread(thread.id);
                     if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[1]) {
@@ -130,6 +150,9 @@ impl AppState {
                 // Regular agent: col / thread / session / pane_id
                 if let Some(col_idx) = self.find_collection_idx(&selected[0]) {
                     if let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1]) {
+                        if self.thread_is_hidden(col_idx, thread_idx) {
+                            return SelectedItem::None;
+                        }
                         let thread = &self.collections[col_idx].threads[thread_idx];
                         let sessions = self.sessions_for_thread(thread.id);
                         if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[2]) {
@@ -169,6 +192,80 @@ impl AppState {
                 thread.name = new_name;
             }
         }
+    }
+
+    pub fn hide_collection(&mut self, idx: usize) -> bool {
+        let Some(col) = self.collections.get_mut(idx) else {
+            return false;
+        };
+        if col.is_root || col.hidden {
+            return false;
+        }
+        col.hidden = true;
+        true
+    }
+
+    pub fn hide_thread(&mut self, col_idx: usize, thread_idx: usize) -> bool {
+        let Some(thread) = self
+            .collections
+            .get_mut(col_idx)
+            .and_then(|col| col.threads.get_mut(thread_idx))
+        else {
+            return false;
+        };
+        if thread.hidden {
+            return false;
+        }
+        thread.hidden = true;
+        true
+    }
+
+    pub fn show_all_hidden(&mut self) -> usize {
+        let mut count = 0;
+        for col in &mut self.collections {
+            if col.hidden {
+                count += 1;
+                col.hidden = false;
+            }
+            for thread in &mut col.threads {
+                if thread.hidden {
+                    count += 1;
+                    thread.hidden = false;
+                }
+            }
+        }
+        count
+    }
+
+    pub fn hidden_count(&self) -> usize {
+        self.collections
+            .iter()
+            .map(|col| {
+                let collection_count = if col.hidden { 1 } else { 0 };
+                collection_count + col.threads.iter().filter(|thread| thread.hidden).count()
+            })
+            .sum()
+    }
+
+    pub fn collection_is_hidden(&self, idx: usize) -> bool {
+        self.collections
+            .get(idx)
+            .map(|col| !col.is_root && col.hidden)
+            .unwrap_or(false)
+    }
+
+    pub fn thread_is_hidden(&self, col_idx: usize, thread_idx: usize) -> bool {
+        let Some(col) = self.collections.get(col_idx) else {
+            return false;
+        };
+        let Some(thread) = col.threads.get(thread_idx) else {
+            return false;
+        };
+        self.collection_is_hidden(col_idx) || thread.hidden
+    }
+
+    pub fn thread_is_visible(&self, col_idx: usize, thread_idx: usize) -> bool {
+        !self.thread_is_hidden(col_idx, thread_idx)
     }
 
     pub fn delete_collection(&mut self, idx: usize) {
@@ -426,6 +523,9 @@ impl AppState {
         let mut result = Vec::new();
         for (col_idx, col) in self.collections.iter().enumerate() {
             for (thread_idx, thread) in col.threads.iter().enumerate() {
+                if self.thread_is_hidden(col_idx, thread_idx) {
+                    continue;
+                }
                 let path = if col.is_root {
                     thread.name.clone()
                 } else {
@@ -440,9 +540,9 @@ impl AppState {
     /// Given a thread ID, find its collection and thread names.
     /// Returns `(Option<collection_name>, thread_name)`. Collection name is `None` for root threads.
     pub fn resolve_thread_path(&self, thread_id: Uuid) -> Option<(Option<String>, String)> {
-        for col in &self.collections {
-            for thread in &col.threads {
-                if thread.id == thread_id {
+        for (col_idx, col) in self.collections.iter().enumerate() {
+            for (thread_idx, thread) in col.threads.iter().enumerate() {
+                if thread.id == thread_id && self.thread_is_visible(col_idx, thread_idx) {
                     let col_name = if col.is_root { None } else { Some(col.name.clone()) };
                     return Some((col_name, thread.name.clone()));
                 }
@@ -458,6 +558,7 @@ impl AppState {
             .active_sessions
             .iter()
             .filter(|s| s.last_attached > 0)
+            .filter(|s| self.resolve_thread_path(s.thread_id).is_some())
             .collect();
         recent.sort_by(|a, b| b.last_attached.cmp(&a.last_attached));
         recent.truncate(n);
@@ -468,9 +569,9 @@ impl AppState {
     /// Path: `[collection_id, thread_id, session_name]` or `[thread_id, session_name]` for root threads.
     pub fn session_tree_path(&self, session_name: &str) -> Option<Vec<String>> {
         let session = self.active_sessions.iter().find(|s| s.tmux_session_name == session_name)?;
-        for col in &self.collections {
-            for thread in &col.threads {
-                if thread.id == session.thread_id {
+        for (col_idx, col) in self.collections.iter().enumerate() {
+            for (thread_idx, thread) in col.threads.iter().enumerate() {
+                if thread.id == session.thread_id && self.thread_is_visible(col_idx, thread_idx) {
                     return if col.is_root {
                         Some(vec![thread.id.to_string(), session_name.to_string()])
                     } else {
@@ -545,6 +646,9 @@ impl AppState {
         let mut result = Vec::new();
         for (col_idx, col) in self.collections.iter().enumerate() {
             for (thread_idx, thread) in col.threads.iter().enumerate() {
+                if self.thread_is_hidden(col_idx, thread_idx) {
+                    continue;
+                }
                 let sessions = self.sessions_for_thread(thread.id);
                 for (sess_idx, session) in sessions.iter().enumerate() {
                     let agents = self.agents_for_session(&session.tmux_session_name);
@@ -681,6 +785,75 @@ mod tests {
         state.delete_thread(0, 0);
         assert_eq!(state.collections[0].threads.len(), 1);
         assert_eq!(state.collections[0].threads[0].name, "B");
+    }
+
+    #[test]
+    fn hide_collection_marks_visible_collection_hidden() {
+        let mut state = AppState::new();
+        state.add_collection("Work".into());
+        assert!(state.hide_collection(0));
+        assert!(state.collections[0].hidden);
+        assert_eq!(state.hidden_count(), 1);
+    }
+
+    #[test]
+    fn hide_collection_ignores_root_collection() {
+        let mut state = AppState::new();
+        state.ensure_general_thread();
+        assert!(!state.hide_collection(0));
+        assert!(!state.collections[0].hidden);
+    }
+
+    #[test]
+    fn hide_thread_marks_thread_hidden() {
+        let mut state = AppState::new();
+        state.add_collection("Work".into());
+        state.add_thread(0, "A".into());
+        assert!(state.hide_thread(0, 0));
+        assert!(state.collections[0].threads[0].hidden);
+    }
+
+    #[test]
+    fn show_all_hidden_restores_everything() {
+        let mut state = AppState::new();
+        state.add_collection("Work".into());
+        state.add_thread(0, "A".into());
+        state.hide_collection(0);
+        state.hide_thread(0, 0);
+        assert_eq!(state.show_all_hidden(), 2);
+        assert!(!state.collections[0].hidden);
+        assert!(!state.collections[0].threads[0].hidden);
+    }
+
+    #[test]
+    fn hidden_selection_resolves_to_none() {
+        let mut state = AppState::with_sample_data();
+        let col_id = state.collections[0].id.to_string();
+        state.hide_collection(0);
+        match state.resolve_selection(&[col_id]) {
+            SelectedItem::None => {}
+            _ => panic!("expected None"),
+        }
+
+        let thread_id = state.collections[1].threads[0].id.to_string();
+        state.hide_thread(1, 0);
+        match state.resolve_selection(&[state.collections[1].id.to_string(), thread_id]) {
+            SelectedItem::None => {}
+            _ => panic!("expected None"),
+        }
+    }
+
+    #[test]
+    fn hidden_threads_are_excluded_from_thread_picker() {
+        let mut state = AppState::with_sample_data();
+        state.hide_thread(0, 0);
+        let paths: Vec<String> = state
+            .all_threads_display()
+            .into_iter()
+            .map(|(_, _, path)| path)
+            .collect();
+        assert!(!paths.contains(&"Work/Edge Device Pipeline".to_string()));
+        assert!(paths.contains(&"Work/Model Training Infra".to_string()));
     }
 
     #[test]
@@ -962,6 +1135,16 @@ mod tests {
         state.refresh_sessions(&live);
         let path = state.session_display_path(&state.active_sessions[0]).unwrap();
         assert_eq!(path, "Work/Edge Device Pipeline/bugfix");
+    }
+
+    #[test]
+    fn session_display_path_hidden_thread_returns_none() {
+        let mut state = AppState::with_sample_data();
+        let live = vec![("tws_work_edge-device-pipeline_bugfix".to_string(), 100)];
+        state.refresh_sessions(&live);
+        state.hide_thread(0, 0);
+        assert!(state.session_display_path(&state.active_sessions[0]).is_none());
+        assert!(state.recent_sessions(5).is_empty());
     }
 
     #[test]

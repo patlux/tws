@@ -14,12 +14,13 @@ pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<
 
     // Regular collections first
     for col in &state.collections {
-        if col.is_root {
+        if col.is_root || col.hidden {
             continue;
         }
         let children: Vec<TreeItem<'a, String>> = col
             .threads
             .iter()
+            .filter(|thread| !thread.hidden)
             .map(|thread| build_thread_item(state, thread, theme))
             .collect();
 
@@ -39,7 +40,9 @@ pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<
             continue;
         }
         for thread in &col.threads {
-            items.push(build_thread_item(state, thread, theme));
+            if !thread.hidden {
+                items.push(build_thread_item(state, thread, theme));
+            }
         }
     }
 

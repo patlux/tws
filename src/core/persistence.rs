@@ -129,16 +129,22 @@ mod tests {
 
     #[test]
     fn deserialize_without_is_root_defaults_false() {
-        // Simulate loading an old state.json that predates the is_root field
+        // Simulate loading an old state.json that predates the is_root/hidden fields
         let json = r#"[{
             "id": "00000000-0000-0000-0000-000000000001",
             "name": "Legacy",
-            "threads": []
+            "threads": [{
+                "id": "00000000-0000-0000-0000-000000000002",
+                "name": "Thread A",
+                "description": null
+            }]
         }]"#;
         let collections: Vec<Collection> = serde_json::from_str(json).unwrap();
         assert_eq!(collections.len(), 1);
         assert_eq!(collections[0].name, "Legacy");
         assert!(!collections[0].is_root);
+        assert!(!collections[0].hidden);
+        assert!(!collections[0].threads[0].hidden);
     }
 
     #[test]
