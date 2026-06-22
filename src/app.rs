@@ -239,6 +239,7 @@ impl App {
         // Restore last selection
         if let Some(sel) = ui_state.selected {
             self.tree_state.select(sel);
+            self.ensure_visible_tree_selection();
         }
         // Restore view mode and agents cursor
         if ui_state.agents_view_active {
@@ -321,6 +322,16 @@ impl App {
         };
         let recent_count = recent_data.len() as u16;
         let show_recent = !recent_data.is_empty();
+        let hidden_count = self.state.hidden_count();
+        let empty_hint = if hidden_count > 0 {
+            format!(
+                "{} hidden. Press {} to show all hidden collections and threads.",
+                hidden_count,
+                self.keymap.key_hint(KeyMode::Normal, Action::ShowHidden),
+            )
+        } else {
+            "Press Enter for a quick session, or a to add a thread.".to_string()
+        };
 
         // Pre-compute flat agents list for agents view mode.
         let flat_agents: Vec<FlatAgent> = if matches!(self.view_mode, ViewMode::Agents) {
@@ -440,7 +451,7 @@ impl App {
                     ]));
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
-                        "Press Enter for a quick session, or a to add a thread.",
+                        empty_hint.as_str(),
                         self.theme.empty_hint,
                     )));
 
@@ -759,13 +770,16 @@ impl App {
     fn visible_tree_paths(&self) -> Vec<Vec<String>> {
         let mut paths = Vec::new();
         for col in &self.state.collections {
-            if col.is_root {
+            if col.is_root || col.hidden {
                 continue;
             }
             let col_path = vec![col.id.to_string()];
             paths.push(col_path.clone());
             if self.tree_state.opened().contains(&col_path) {
                 for thread in &col.threads {
+                    if thread.hidden {
+                        continue;
+                    }
                     let thread_path = vec![col.id.to_string(), thread.id.to_string()];
                     paths.push(thread_path.clone());
                     if self.tree_state.opened().contains(&thread_path) {
@@ -779,6 +793,9 @@ impl App {
                 continue;
             }
             for thread in &col.threads {
+                if thread.hidden {
+                    continue;
+                }
                 let thread_path = vec![thread.id.to_string()];
                 paths.push(thread_path.clone());
                 if self.tree_state.opened().contains(&thread_path) {
@@ -809,6 +826,50 @@ impl App {
         }
     }
 
+    fn next_visible_path(&self, selected: &[String]) -> Vec<String> {
+        let paths = self.visible_tree_paths();
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        if let Some(idx) = paths.iter().position(|path| path == selected) {
+            let next_idx = if idx + 1 < paths.len() {
+                idx + 1
+            } else {
+                idx.saturating_sub(1)
+            };
+            return paths[next_idx].clone();
+        }
+        paths.first().cloned().unwrap_or_default()
+    }
+
+    fn next_visible_path_after_hiding(&self, selected: &[String]) -> Vec<String> {
+        let paths = self.visible_tree_paths();
+        let Some(idx) = paths.iter().position(|path| path == selected) else {
+            return paths.first().cloned().unwrap_or_default();
+        };
+        for path in paths.iter().skip(idx + 1) {
+            if !path.as_slice().starts_with(selected) {
+                return path.clone();
+            }
+        }
+        for path in paths.iter().take(idx).rev() {
+            if !path.as_slice().starts_with(selected) {
+                return path.clone();
+            }
+        }
+        Vec::new()
+    }
+
+    fn ensure_visible_tree_selection(&mut self) {
+        if self.tree_state.selected().is_empty() {
+            return;
+        }
+        if matches!(self.state.resolve_selection(self.tree_state.selected()), SelectedItem::None) {
+            let next = self.next_visible_path(self.tree_state.selected());
+            self.tree_state.select(next);
+        }
+    }
+
     fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
         let action = match self.keymap.resolve(KeyMode::Normal, code, modifiers) {
             Some(a) => a,
@@ -834,13 +895,9 @@ impl App {
             Action::Delete => self.start_delete(),
             Action::KillSession => self.start_kill_session(),
             Action::Move => self.start_move_session(),
-            Action::Finder => {
-                if self.state.active_sessions.is_empty() && self.state.worktree_sessions.is_empty() {
-                    self.set_flash("No sessions or worktrees");
-                    return Ok(());
-                }
-                self.start_finder();
-            }
+            Action::Hide => self.hide_selected(),
+            Action::ShowHidden => self.show_all_hidden(),
+            Action::Finder => self.start_finder(),
             Action::RecentSession1 => self.attach_recent(0, terminal)?,
             Action::RecentSession2 => self.attach_recent(1, terminal)?,
             Action::RecentSession3 => self.attach_recent(2, terminal)?,
@@ -1106,6 +1163,37 @@ impl App {
         };
     }
 
+    fn hide_selected(&mut self) {
+        let selected_path = self.tree_state.selected().to_vec();
+        let fallback_path = self.next_visible_path_after_hiding(&selected_path);
+        let selected = self.state.resolve_selection(&selected_path);
+        let hidden = match selected {
+            SelectedItem::Collection(idx) => self.state.hide_collection(idx),
+            SelectedItem::Thread(col_idx, thread_idx) => self.state.hide_thread(col_idx, thread_idx),
+            SelectedItem::Session(..)
+            | SelectedItem::Worktree(..)
+            | SelectedItem::Agent(..)
+            | SelectedItem::None => false,
+        };
+        if hidden {
+            self.tree_state.select(fallback_path);
+            self.save_state();
+            self.set_flash("Hidden");
+            self.sync_note_editor();
+        }
+    }
+
+    fn show_all_hidden(&mut self) {
+        let restored = self.state.show_all_hidden();
+        if restored == 0 {
+            self.set_flash("No hidden collections or threads");
+            return;
+        }
+        self.save_state();
+        self.set_flash(&format!("Restored {} hidden", restored));
+        self.sync_note_editor();
+    }
+
     fn start_delete(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         let purpose = match &selected {
@@ -1282,6 +1370,11 @@ impl App {
             let path = self.state.worktree_display_path(w)?;
             Some((w.tmux_session_name.clone(), format!("{}  {}", path, w.path.display())))
         }));
+
+        if entries.is_empty() {
+            self.set_flash("No visible sessions or worktrees");
+            return;
+        }
 
         self.mode = Mode::Finder {
             state: FinderState::new(entries),
@@ -2024,6 +2117,9 @@ impl App {
         for col in &self.state.collections {
             if col.is_root {
                 for thread in &col.threads {
+                    if thread.hidden {
+                        continue;
+                    }
                     if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
                         all_paths.push(vec![thread.id.to_string()]);
                         // Also expand sessions that have agents
@@ -2037,8 +2133,14 @@ impl App {
                     }
                 }
             } else {
+                if col.hidden {
+                    continue;
+                }
                 all_paths.push(vec![col.id.to_string()]);
                 for thread in &col.threads {
+                    if thread.hidden {
+                        continue;
+                    }
                     if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
                         all_paths.push(vec![col.id.to_string(), thread.id.to_string()]);
                         // Also expand sessions that have agents
@@ -2080,7 +2182,11 @@ impl App {
         let open_nodes: Vec<Vec<String>> = self.tree_state.opened().iter().cloned().collect();
         let selected = {
             let sel = self.tree_state.selected();
-            if sel.is_empty() { None } else { Some(sel.to_vec()) }
+            if sel.is_empty() || matches!(self.state.resolve_selection(sel), SelectedItem::None) {
+                None
+            } else {
+                Some(sel.to_vec())
+            }
         };
         let agents_view_active = matches!(self.view_mode, ViewMode::Agents);
         let agent_list_cursor = self.agent_list_cursor;

@@ -22,7 +22,7 @@ Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovere
 
 ### Thread tree
 
-The main view. The thread/session tree on the left, a notes panel on the right. Threads expand to show their sessions, and each running session reveals any AI coding agents detected inside it. Press `Enter` on a thread to spawn a new session, or on a session to attach.
+The main view. The thread/session tree on the left, a notes panel on the right. Threads expand to show their sessions, and each running session reveals any AI coding agents detected inside it. Press `Enter` on a thread to spawn a new session, or on a session to attach. Press `H` on a collection or thread to hide it, and `u` to show all hidden collections and threads again.
 
 <img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 23 48" src="https://github.com/user-attachments/assets/0d38ff3d-1caf-4f5a-bd91-67dba3dad98f" />
 
@@ -226,6 +226,8 @@ add        = "a"
 move_down  = "ctrl+j"
 move_up    = "ctrl+k"
 finder     = "/"
+hide       = "H"
+show_hidden = "u"
 
 [keys.agents]
 toggle_view = "v"
