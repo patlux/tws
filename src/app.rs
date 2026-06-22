@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ansi_to_tui::IntoText;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
@@ -49,7 +50,23 @@ enum ConfirmPurpose {
     DeleteThread { col_idx: usize, thread_idx: usize, name: String },
     KillSession { session_name: String },
     KillAllSessions { col_idx: usize, thread_idx: usize, thread_name: String },
-    DeleteWorktree { path: PathBuf, name: String, tmux_session_name: String },
+    DeleteWorktree { repo: PathBuf, path: PathBuf, name: String, tmux_session_name: String, kill_session: bool },
+}
+
+struct PendingWorktreeDelete {
+    parent_selection: Vec<String>,
+}
+
+struct WorktreeDeleteResult {
+    tmux_session_name: String,
+    name: String,
+    result: Result<(), String>,
+}
+
+struct Notification {
+    message: String,
+    is_error: bool,
+    created_at: Instant,
 }
 
 struct FinderState {
@@ -161,6 +178,12 @@ pub struct App {
     pin_assign_pending: Option<String>,
     /// True after a first `g` in normal navigation; the next `g` jumps to top.
     jump_to_top_pending: bool,
+    /// Worktree delete jobs currently running in background threads, keyed by tmux session name.
+    pending_worktree_deletes: HashMap<String, PendingWorktreeDelete>,
+    worktree_delete_tx: Sender<WorktreeDeleteResult>,
+    worktree_delete_rx: Receiver<WorktreeDeleteResult>,
+    notification: Option<Notification>,
+    animation_start: Instant,
 }
 
 /// How often to poll tmux for session changes (seconds).
@@ -168,6 +191,9 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How often to re-capture the agent pane preview (seconds).
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+
+const NOTIFICATION_DURATION: Duration = Duration::from_secs(4);
+const DELETE_SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
 
 fn expand_home(path: &str) -> PathBuf {
     if path == "~" {
@@ -185,6 +211,44 @@ fn short_head(head: &str) -> &str {
     head.get(..8).unwrap_or(head)
 }
 
+fn parent_selection_path(selected: &[String]) -> Vec<String> {
+    selected
+        .iter()
+        .take(selected.len().saturating_sub(1))
+        .cloned()
+        .collect()
+}
+
+fn render_notification(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    message: &str,
+    is_error: bool,
+    theme: &Theme,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let width = ((message.chars().count() as u16) + 4).min(area.width);
+    let height = if area.height >= 3 && width >= 4 { 3 } else { 1 };
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(width),
+        y: area.y,
+        width,
+        height,
+    };
+    let style = if is_error { theme.worktree_prunable } else { theme.flash };
+
+    frame.render_widget(Clear, rect);
+    if height == 3 {
+        let block = Block::bordered().border_style(style);
+        frame.render_widget(Paragraph::new(message.to_string()).style(style).block(block), rect);
+    } else {
+        frame.render_widget(Paragraph::new(Line::styled(message.to_string(), style)), rect);
+    }
+}
+
 impl App {
     pub fn new(
         state: AppState,
@@ -194,6 +258,7 @@ impl App {
         start_dir_configs: Vec<StartDirConfig>,
         worktree_configs: Vec<WorktreeConfig>,
     ) -> Self {
+        let (worktree_delete_tx, worktree_delete_rx) = mpsc::channel();
         Self {
             state,
             tree_state: TreeState::default(),
@@ -218,11 +283,73 @@ impl App {
             pending_pin_restore: Vec::new(),
             pin_assign_pending: None,
             jump_to_top_pending: false,
+            pending_worktree_deletes: HashMap::new(),
+            worktree_delete_tx,
+            worktree_delete_rx,
+            notification: None,
+            animation_start: Instant::now(),
         }
     }
 
     fn set_flash(&mut self, msg: &str) {
         self.flash = Some((msg.to_string(), Instant::now()));
+    }
+
+    fn set_notification(&mut self, message: impl Into<String>, is_error: bool) {
+        self.notification = Some(Notification {
+            message: message.into(),
+            is_error,
+            created_at: Instant::now(),
+        });
+    }
+
+    fn worktree_spinner_frame(&self) -> &'static str {
+        let ticks = self.animation_start.elapsed().as_millis() / 180;
+        DELETE_SPINNER[(ticks as usize) % DELETE_SPINNER.len()]
+    }
+
+    fn worktree_delete_progress_labels(&self) -> HashMap<String, String> {
+        self.pending_worktree_deletes
+            .keys()
+            .map(|session_name| {
+                let name = self
+                    .state
+                    .find_worktree_by_tmux_name(session_name)
+                    .map(|w| w.display_name.clone())
+                    .or_else(|| {
+                        self.state
+                            .active_sessions
+                            .iter()
+                            .find(|s| s.tmux_session_name == *session_name)
+                            .map(|s| s.display_name.clone())
+                    })
+                    .unwrap_or_else(|| "worktree".to_string());
+                (session_name.clone(), format!("deleting {}", name))
+            })
+            .collect()
+    }
+
+    fn poll_worktree_delete_results(&mut self) {
+        while let Ok(result) = self.worktree_delete_rx.try_recv() {
+            let pending = self.pending_worktree_deletes.remove(&result.tmux_session_name);
+            match result.result {
+                Ok(()) => {
+                    self.notes.remove(&result.tmux_session_name);
+                    self.do_refresh_sessions();
+                    if let Some(pending) = pending {
+                        if !pending.parent_selection.is_empty() {
+                            self.tree_state.select(pending.parent_selection);
+                        }
+                    }
+                    self.sync_note_editor();
+                    self.set_notification(format!("Deleted worktree {}", result.name), false);
+                }
+                Err(err) => {
+                    self.do_refresh_sessions();
+                    self.set_notification(format!("Delete failed: {}", err), true);
+                }
+            }
+        }
     }
 
     pub fn run(&mut self, terminal: &mut Tui, ui_state: persistence::UiState) -> std::io::Result<()> {
@@ -248,6 +375,8 @@ impl App {
         self.sync_note_editor();
 
         while self.running {
+            self.poll_worktree_delete_results();
+
             // Periodic session refresh (includes agent scan)
             if self.last_refresh.elapsed() >= REFRESH_INTERVAL {
                 self.do_refresh_sessions();
@@ -298,6 +427,16 @@ impl App {
             Some((msg, t)) if t.elapsed() < Duration::from_secs(2) => Some(msg.clone()),
             Some(_) => {
                 self.flash = None;
+                None
+            }
+            None => None,
+        };
+        let notification_msg: Option<(String, bool)> = match &self.notification {
+            Some(notification) if notification.created_at.elapsed() < NOTIFICATION_DURATION => {
+                Some((notification.message.clone(), notification.is_error))
+            }
+            Some(_) => {
+                self.notification = None;
                 None
             }
             None => None,
@@ -426,7 +565,10 @@ impl App {
                 agents_view::render(frame, &flat_agents, self.agent_list_cursor, tree_area, &self.theme);
             } else {
                 let block = Block::default();
-                let items = tree_view::build_tree_items(&self.state, &self.theme);
+                let deleting_labels = self.worktree_delete_progress_labels();
+                let deleting_label = |session_name: &str| deleting_labels.get(session_name).cloned();
+                let deleting_icon = self.worktree_spinner_frame();
+                let items = tree_view::build_tree_items(&self.state, &self.theme, &deleting_label);
                 if items.is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);
                     let content_height = 4u16;
@@ -473,6 +615,8 @@ impl App {
                         tree_area,
                         &self.theme,
                         tree_highlight,
+                        &deleting_label,
+                        deleting_icon,
                     );
                 }
             }
@@ -568,8 +712,12 @@ impl App {
                         ConfirmPurpose::KillAllSessions { thread_name, .. } => {
                             format!("Kill all sessions for \"{}\"?", thread_name)
                         }
-                        ConfirmPurpose::DeleteWorktree { name, .. } => {
-                            format!("Delete worktree \"{}\"?", name)
+                        ConfirmPurpose::DeleteWorktree { name, kill_session, .. } => {
+                            if *kill_session {
+                                format!("Kill session and delete worktree \"{}\"?", name)
+                            } else {
+                                format!("Delete worktree \"{}\"?", name)
+                            }
                         }
                     };
                     confirm_modal::render(frame, &message, area, &self.theme);
@@ -598,6 +746,10 @@ impl App {
                         &self.theme,
                     );
                 }
+            }
+
+            if let Some((message, is_error)) = &notification_msg {
+                render_notification(frame, area, message, *is_error, &self.theme);
             }
         })?;
         Ok(())
@@ -631,7 +783,13 @@ impl App {
                     SelectedItem::None => StatusContext::NormalNone,
                     SelectedItem::Collection(_) => StatusContext::NormalCollection,
                     SelectedItem::Thread(_, _) => StatusContext::NormalThread,
-                    SelectedItem::Session(_, _, _) => StatusContext::NormalSession,
+                    SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                        if self.worktree_for_active_session_selection(*col_idx, *thread_idx, *sess_idx).is_some() {
+                            StatusContext::NormalWorktreeSession
+                        } else {
+                            StatusContext::NormalSession
+                        }
+                    }
                     SelectedItem::Worktree(_, _, _) => StatusContext::NormalWorktree,
                     SelectedItem::Agent(..) => StatusContext::NormalAgent,
                 }
@@ -1115,6 +1273,13 @@ impl App {
         };
     }
 
+    fn worktree_for_active_session_selection(&self, col_idx: usize, thread_idx: usize, sess_idx: usize) -> Option<&WorktreeSession> {
+        let thread_id = self.state.collections.get(col_idx)?.threads.get(thread_idx)?.id;
+        let sessions = self.state.sessions_for_thread(thread_id);
+        let session = sessions.get(sess_idx)?;
+        self.state.find_worktree_by_tmux_name(&session.tmux_session_name)
+    }
+
     fn start_delete(&mut self) {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         let purpose = match &selected {
@@ -1138,14 +1303,44 @@ impl App {
                 let Some(worktree) = worktrees.get(*wt_idx) else {
                     return;
                 };
+                if worktree.is_main {
+                    self.set_flash("Cannot delete main worktree");
+                    return;
+                }
+                if self.pending_worktree_deletes.contains_key(&worktree.tmux_session_name) {
+                    self.set_flash("Worktree delete already running");
+                    return;
+                }
                 ConfirmPurpose::DeleteWorktree {
+                    repo: worktree.repo.clone(),
                     path: worktree.path.clone(),
                     name: worktree.display_name.clone(),
                     tmux_session_name: worktree.tmux_session_name.clone(),
+                    kill_session: false,
                 }
             }
-            // Use 'x' to kill sessions, not 'd'
-            SelectedItem::Session(..) | SelectedItem::Agent(..) | SelectedItem::None => return,
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                let Some(worktree) = self.worktree_for_active_session_selection(*col_idx, *thread_idx, *sess_idx) else {
+                    // Use 'x' to kill ordinary sessions, not 'd'.
+                    return;
+                };
+                if worktree.is_main {
+                    self.set_flash("Cannot delete main worktree");
+                    return;
+                }
+                if self.pending_worktree_deletes.contains_key(&worktree.tmux_session_name) {
+                    self.set_flash("Worktree delete already running");
+                    return;
+                }
+                ConfirmPurpose::DeleteWorktree {
+                    repo: worktree.repo.clone(),
+                    path: worktree.path.clone(),
+                    name: worktree.display_name.clone(),
+                    tmux_session_name: worktree.tmux_session_name.clone(),
+                    kill_session: true,
+                }
+            }
+            SelectedItem::Agent(..) | SelectedItem::None => return,
         };
         self.mode = Mode::Confirm { purpose };
     }
@@ -1154,6 +1349,27 @@ impl App {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         match selected {
             SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                if let Some(worktree) = self.worktree_for_active_session_selection(col_idx, thread_idx, sess_idx) {
+                    if worktree.is_main {
+                        self.set_flash("Cannot delete main worktree");
+                        return;
+                    }
+                    if self.pending_worktree_deletes.contains_key(&worktree.tmux_session_name) {
+                        self.set_flash("Worktree delete already running");
+                        return;
+                    }
+                    self.mode = Mode::Confirm {
+                        purpose: ConfirmPurpose::DeleteWorktree {
+                            repo: worktree.repo.clone(),
+                            path: worktree.path.clone(),
+                            name: worktree.display_name.clone(),
+                            tmux_session_name: worktree.tmux_session_name.clone(),
+                            kill_session: true,
+                        },
+                    };
+                    return;
+                }
+
                 let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
                 let sessions = self.state.sessions_for_thread(thread_id);
                 if let Some(session) = sessions.get(sess_idx) {
@@ -1757,25 +1973,30 @@ impl App {
                     self.set_flash("All sessions killed");
                     self.sync_note_editor();
                 }
-                ConfirmPurpose::DeleteWorktree { path, tmux_session_name, .. } => {
-                    match worktrees::remove(&path) {
-                        Ok(()) => {
-                            let _ = tmux::kill_session(&tmux_session_name);
-                            self.notes.remove(&tmux_session_name);
-                            self.refresh_worktree_sessions();
-                            let parent: Vec<String> = self.tree_state.selected()
-                                .iter()
-                                .rev()
-                                .skip(1)
-                                .rev()
-                                .cloned()
-                                .collect();
-                            self.tree_state.select(parent);
-                            self.set_flash("Worktree deleted");
-                            self.sync_note_editor();
-                        }
-                        Err(err) => self.set_flash(&format!("Delete failed: {}", err)),
+                ConfirmPurpose::DeleteWorktree { repo, path, name, tmux_session_name, kill_session } => {
+                    if self.pending_worktree_deletes.contains_key(&tmux_session_name) {
+                        self.set_flash("Worktree delete already running");
+                        return;
                     }
+                    let parent_selection = parent_selection_path(self.tree_state.selected());
+                    self.pending_worktree_deletes.insert(
+                        tmux_session_name.clone(),
+                        PendingWorktreeDelete { parent_selection },
+                    );
+                    self.set_flash("Deleting worktree…");
+
+                    let tx = self.worktree_delete_tx.clone();
+                    std::thread::spawn(move || {
+                        let result = worktrees::remove(&repo, &path);
+                        if result.is_ok() && kill_session {
+                            let _ = tmux::kill_session(&tmux_session_name);
+                        }
+                        let _ = tx.send(WorktreeDeleteResult {
+                            tmux_session_name,
+                            name,
+                            result,
+                        });
+                    });
                 }
             }
         }
@@ -1919,10 +2140,12 @@ impl App {
                     tmux_session_name: session_name,
                     display_name: label,
                     thread_id,
+                    repo: repo.clone(),
                     path: wt.path,
                     branch: wt.branch,
                     head: wt.head,
                     prunable: wt.prunable,
+                    is_main: wt.is_main,
                     path_exists,
                     launchable,
                 });
