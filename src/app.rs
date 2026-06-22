@@ -465,6 +465,15 @@ impl App {
                         .node_no_children_symbol("  ");
 
                     frame.render_stateful_widget(tree, tree_area, &mut self.tree_state);
+                    tree_view::render_worktree_icons(
+                        frame,
+                        &self.state,
+                        &self.tree_state,
+                        &items,
+                        tree_area,
+                        &self.theme,
+                        tree_highlight,
+                    );
                 }
             }
 

@@ -1,9 +1,12 @@
-use ratatui::style::Modifier;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use tui_tree_widget::TreeItem;
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
+use tui_tree_widget::{TreeItem, TreeState};
 
 use crate::core::model::Thread;
-use crate::core::state::AppState;
+use crate::core::state::{AppState, SelectedItem};
 use crate::theme::Theme;
 
 /// Converts the app state into TreeItems for rendering.
@@ -44,6 +47,71 @@ pub fn build_tree_items<'a>(state: &'a AppState, theme: &Theme) -> Vec<TreeItem<
     }
 
     items
+}
+
+/// Render worktree status icons in the tree's symbol column.
+///
+/// `tui-tree-widget` only has one global no-children symbol, so worktree icons are
+/// overlaid after the tree is rendered. This keeps worktree labels aligned with
+/// regular session labels while drawing `◌`/`✕` where `›`/`⌄` would appear.
+pub fn render_worktree_icons(
+    frame: &mut Frame<'_>,
+    app_state: &AppState,
+    tree_state: &TreeState<String>,
+    items: &[TreeItem<'_, String>],
+    area: Rect,
+    theme: &Theme,
+    highlight_style: Style,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let visible = tree_state.flatten(items);
+    let mut y_offset = 0u16;
+
+    for flattened in visible.iter().skip(tree_state.get_offset()) {
+        let height = flattened.item.height() as u16;
+        if y_offset.saturating_add(height) > area.height {
+            break;
+        }
+
+        if matches!(app_state.resolve_selection(&flattened.identifier), SelectedItem::Worktree(..)) {
+            if let Some(worktree_name) = flattened.identifier.last() {
+                if let Some(worktree) = app_state.find_worktree_by_tmux_name(worktree_name) {
+                    let (icon, unselected_style) = if worktree.launchable {
+                        ("◌ ", theme.worktree_meta)
+                    } else {
+                        ("✕ ", theme.worktree_prunable)
+                    };
+                    let style = if tree_state.selected() == flattened.identifier.as_slice() {
+                        highlight_style
+                    } else {
+                        unselected_style
+                    };
+                    let highlight_width = if tree_state.selected().is_empty() { 0 } else { 2 };
+                    let x_offset = highlight_width + (flattened.depth() as u16 * 2);
+                    if x_offset < area.width {
+                        let icon_area = Rect {
+                            x: area.x + x_offset,
+                            y: area.y + y_offset,
+                            width: area.width.saturating_sub(x_offset).min(2),
+                            height: 1,
+                        };
+                        frame.render_widget(
+                            Paragraph::new(Line::from(Span::styled(icon, style))),
+                            icon_area,
+                        );
+                    }
+                }
+            }
+        }
+
+        y_offset = y_offset.saturating_add(height);
+        if y_offset >= area.height {
+            break;
+        }
+    }
 }
 
 /// Build a TreeItem for a single thread (shared between regular and root threads).
@@ -89,15 +157,12 @@ fn build_thread_item<'a>(
         .collect();
 
     for worktree in state.worktrees_for_thread(thread.id) {
-        let (icon, name_style) = if worktree.launchable {
-            ("◌ ", theme.worktree)
+        let name_style = if worktree.launchable {
+            theme.worktree
         } else {
-            ("✕ ", theme.worktree_prunable)
+            theme.worktree_prunable
         };
-        let mut spans = vec![
-            Span::styled(icon, theme.worktree_meta),
-            Span::styled(&worktree.display_name, name_style),
-        ];
+        let mut spans = vec![Span::styled(&worktree.display_name, name_style)];
         if let Some(branch) = &worktree.branch {
             spans.push(Span::styled("  ", theme.worktree_meta));
             spans.push(Span::styled(branch_display_name(branch), theme.worktree_meta));
