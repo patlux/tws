@@ -50,6 +50,7 @@ enum ConfirmPurpose {
     DeleteThread { col_idx: usize, thread_idx: usize, name: String },
     KillSession { session_name: String },
     KillAllSessions { col_idx: usize, thread_idx: usize, thread_name: String },
+    KillMarkedSessions { session_names: Vec<String> },
     DeleteWorktree { repo: PathBuf, path: PathBuf, name: String, tmux_session_name: String, kill_session: bool },
 }
 
@@ -178,6 +179,8 @@ pub struct App {
     pin_assign_pending: Option<String>,
     /// True after a first `g` in normal navigation; the next `g` jumps to top.
     jump_to_top_pending: bool,
+    /// Active tmux sessions marked for batch operations, keyed by tmux session name.
+    marked_sessions: HashSet<String>,
     /// Worktree delete jobs currently running in background threads, keyed by tmux session name.
     pending_worktree_deletes: HashMap<String, PendingWorktreeDelete>,
     worktree_delete_tx: Sender<WorktreeDeleteResult>,
@@ -283,6 +286,7 @@ impl App {
             pending_pin_restore: Vec::new(),
             pin_assign_pending: None,
             jump_to_top_pending: false,
+            marked_sessions: HashSet::new(),
             pending_worktree_deletes: HashMap::new(),
             worktree_delete_tx,
             worktree_delete_rx,
@@ -334,6 +338,7 @@ impl App {
             let pending = self.pending_worktree_deletes.remove(&result.tmux_session_name);
             match result.result {
                 Ok(()) => {
+                    self.marked_sessions.remove(&result.tmux_session_name);
                     self.notes.remove(&result.tmux_session_name);
                     self.do_refresh_sessions();
                     if let Some(pending) = pending {
@@ -350,6 +355,67 @@ impl App {
                 }
             }
         }
+    }
+
+    fn prune_marked_sessions(&mut self) {
+        let live: HashSet<String> = self
+            .state
+            .active_sessions
+            .iter()
+            .map(|s| s.tmux_session_name.clone())
+            .collect();
+        self.marked_sessions.retain(|name| live.contains(name));
+    }
+
+    fn selected_session_name_for_marking(&self) -> Option<String> {
+        match self.state.resolve_selection(self.tree_state.selected()) {
+            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
+                let thread_id = self.state.collections.get(col_idx)?.threads.get(thread_idx)?.id;
+                self.state
+                    .sessions_for_thread(thread_id)
+                    .get(sess_idx)
+                    .map(|s| s.tmux_session_name.clone())
+            }
+            SelectedItem::Agent(col_idx, thread_idx, sess_idx, _) => {
+                let thread_id = self.state.collections.get(col_idx)?.threads.get(thread_idx)?.id;
+                self.state
+                    .sessions_for_thread(thread_id)
+                    .get(sess_idx)
+                    .map(|s| s.tmux_session_name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn toggle_mark_current_session(&mut self) {
+        let Some(session_name) = self.selected_session_name_for_marking() else {
+            self.set_flash("Select a session to mark");
+            return;
+        };
+        if !self.marked_sessions.insert(session_name.clone()) {
+            self.marked_sessions.remove(&session_name);
+            self.set_flash("Session unmarked");
+        } else {
+            self.set_flash("Session marked");
+        }
+    }
+
+    fn clear_marked_sessions(&mut self) {
+        if self.marked_sessions.is_empty() {
+            self.set_flash("No marked sessions");
+            return;
+        }
+        self.marked_sessions.clear();
+        self.set_flash("Marks cleared");
+    }
+
+    fn marked_session_names(&self) -> Vec<String> {
+        self.state
+            .active_sessions
+            .iter()
+            .filter(|session| self.marked_sessions.contains(&session.tmux_session_name))
+            .map(|session| session.tmux_session_name.clone())
+            .collect()
     }
 
     pub fn run(&mut self, terminal: &mut Tui, ui_state: persistence::UiState) -> std::io::Result<()> {
@@ -568,6 +634,8 @@ impl App {
                 let deleting_labels = self.worktree_delete_progress_labels();
                 let deleting_label = |session_name: &str| deleting_labels.get(session_name).cloned();
                 let deleting_icon = self.worktree_spinner_frame();
+                let marked_sessions = self.marked_sessions.clone();
+                let is_marked = |session_name: &str| marked_sessions.contains(session_name);
                 let items = tree_view::build_tree_items(&self.state, &self.theme, &deleting_label);
                 if items.is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);
@@ -617,6 +685,7 @@ impl App {
                         tree_highlight,
                         &deleting_label,
                         deleting_icon,
+                        &is_marked,
                     );
                 }
             }
@@ -712,6 +781,9 @@ impl App {
                         ConfirmPurpose::KillAllSessions { thread_name, .. } => {
                             format!("Kill all sessions for \"{}\"?", thread_name)
                         }
+                        ConfirmPurpose::KillMarkedSessions { session_names } => {
+                            format!("Kill {} selected sessions?", session_names.len())
+                        }
                         ConfirmPurpose::DeleteWorktree { name, kill_session, .. } => {
                             if *kill_session {
                                 format!("Kill session and delete worktree \"{}\"?", name)
@@ -778,6 +850,10 @@ impl App {
                 }
                 if matches!(self.focus, Focus::Notes) {
                     return StatusContext::Notes;
+                }
+                let marked_count = self.marked_session_names().len();
+                if marked_count > 0 {
+                    return StatusContext::NormalMarkedSessions { count: marked_count };
                 }
                 match selected {
                     SelectedItem::None => StatusContext::NormalNone,
@@ -1001,6 +1077,8 @@ impl App {
             Action::Delete => self.start_delete(),
             Action::KillSession => self.start_kill_session(),
             Action::Move => self.start_move_session(),
+            Action::MarkSession => self.toggle_mark_current_session(),
+            Action::ClearMarks => self.clear_marked_sessions(),
             Action::Finder => {
                 if self.state.active_sessions.is_empty() && self.state.worktree_sessions.is_empty() {
                     self.set_flash("No sessions or worktrees");
@@ -1346,6 +1424,14 @@ impl App {
     }
 
     fn start_kill_session(&mut self) {
+        let marked = self.marked_session_names();
+        if !marked.is_empty() {
+            self.mode = Mode::Confirm {
+                purpose: ConfirmPurpose::KillMarkedSessions { session_names: marked },
+            };
+            return;
+        }
+
         let selected = self.state.resolve_selection(self.tree_state.selected());
         match selected {
             SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
@@ -1628,6 +1714,9 @@ impl App {
                 if let Some(new_tmux_name) = self.state.make_session_name(dest_col, dest_thread, &session_label) {
                     let _ = tmux::rename_session(&session_name, &new_tmux_name);
                     self.notes.rename(&session_name, &new_tmux_name);
+                    if self.marked_sessions.remove(&session_name) {
+                        self.marked_sessions.insert(new_tmux_name.clone());
+                    }
                     self.do_refresh_sessions();
 
                     if let Some(path) = self.state.session_tree_path(&new_tmux_name) {
@@ -1798,6 +1887,9 @@ impl App {
                     for (old_name, label, thread_idx) in &old_sessions {
                         if let Some(new_name) = self.state.make_session_name(idx, *thread_idx, label) {
                             let _ = tmux::rename_session(old_name, &new_name);
+                            if self.marked_sessions.remove(old_name) {
+                                self.marked_sessions.insert(new_name);
+                            }
                         }
                     }
                     self.do_refresh_sessions();
@@ -1819,6 +1911,9 @@ impl App {
                     for (old_name, label) in &old_sessions {
                         if let Some(new_name) = self.state.make_session_name(col_idx, thread_idx, label) {
                             let _ = tmux::rename_session(old_name, &new_name);
+                            if self.marked_sessions.remove(old_name) {
+                                self.marked_sessions.insert(new_name);
+                            }
                         }
                     }
                     self.do_refresh_sessions();
@@ -1846,6 +1941,9 @@ impl App {
                 InputPurpose::RenameSession { col_idx, thread_idx, old_tmux_name } => {
                     if let Some(new_tmux_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
                         let _ = tmux::rename_session(&old_tmux_name, &new_tmux_name);
+                        if self.marked_sessions.remove(&old_tmux_name) {
+                            self.marked_sessions.insert(new_tmux_name.clone());
+                        }
                         self.do_refresh_sessions();
                         self.set_flash("Session renamed");
                     }
@@ -1885,6 +1983,7 @@ impl App {
                     }
                     for name in &session_names {
                         let _ = tmux::kill_session(name);
+                        self.marked_sessions.remove(name);
                     }
                     self.notes.remove_all(&note_keys);
                     self.state.delete_collection(idx);
@@ -1914,6 +2013,7 @@ impl App {
                         .collect();
                     for name in session_names {
                         let _ = tmux::kill_session(&name);
+                        self.marked_sessions.remove(&name);
                     }
                     self.notes.remove_all(&note_keys);
                     self.state.delete_thread(col_idx, thread_idx);
@@ -1932,6 +2032,7 @@ impl App {
                 }
                 ConfirmPurpose::KillSession { session_name } => {
                     let _ = tmux::kill_session(&session_name);
+                    self.marked_sessions.remove(&session_name);
                     self.notes.remove(&session_name);
                     self.do_refresh_sessions();
                     // Move selection up to the parent thread so the sidebar stays visible.
@@ -1958,6 +2059,7 @@ impl App {
                         .collect();
                     for name in &names {
                         let _ = tmux::kill_session(name);
+                        self.marked_sessions.remove(name);
                     }
                     self.notes.remove_all(&names);
                     self.do_refresh_sessions();
@@ -1971,6 +2073,17 @@ impl App {
                     };
                     self.tree_state.select(thread_path);
                     self.set_flash("All sessions killed");
+                    self.sync_note_editor();
+                }
+                ConfirmPurpose::KillMarkedSessions { session_names } => {
+                    let count = session_names.len();
+                    for name in &session_names {
+                        let _ = tmux::kill_session(name);
+                    }
+                    self.notes.remove_all(&session_names);
+                    self.marked_sessions.clear();
+                    self.do_refresh_sessions();
+                    self.set_flash(&format!("Killed {} sessions", count));
                     self.sync_note_editor();
                 }
                 ConfirmPurpose::DeleteWorktree { repo, path, name, tmux_session_name, kill_session } => {
@@ -2086,6 +2199,7 @@ impl App {
         self.refresh_worktree_sessions();
         let live = tmux::list_tws_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
+        self.prune_marked_sessions();
         self.last_refresh = Instant::now();
         self.do_agent_scan();
     }

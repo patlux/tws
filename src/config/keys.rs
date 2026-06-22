@@ -32,6 +32,8 @@ pub enum Action {
     Cancel,
     Backspace,
     Move,
+    MarkSession,
+    ClearMarks,
     PinAgent,
     PinAgentSlot,
 }
@@ -137,6 +139,8 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "cancel" => Ok(Action::Cancel),
         "backspace" => Ok(Action::Backspace),
         "move" => Ok(Action::Move),
+        "mark_session" => Ok(Action::MarkSession),
+        "clear_marks" => Ok(Action::ClearMarks),
         "pin_agent" => Ok(Action::PinAgent),
         "pin_agent_slot" => Ok(Action::PinAgentSlot),
         _ => Err(format!("unknown action: {:?}", s)),
@@ -209,7 +213,9 @@ impl Keymap {
         bind!(M::Normal, KeyCode::Char('r'), KeyModifiers::NONE,  A::Rename);
         bind!(M::Normal, KeyCode::Char('d'), KeyModifiers::NONE,  A::Delete);
         bind!(M::Normal, KeyCode::Char('x'), KeyModifiers::NONE,  A::KillSession);
-        bind!(M::Normal, KeyCode::Char('m'), KeyModifiers::NONE,  A::Move);
+        bind!(M::Normal, KeyCode::Char('m'), KeyModifiers::NONE,  A::MarkSession);
+        bind!(M::Normal, KeyCode::Char('M'), KeyModifiers::SHIFT, A::ClearMarks);
+        bind!(M::Normal, KeyCode::Char('s'), KeyModifiers::NONE,  A::Move);
         bind!(M::Normal, KeyCode::Char('/'), KeyModifiers::NONE,  A::Finder);
         bind!(M::Normal, KeyCode::Char('e'), KeyModifiers::NONE,  A::ExpandAll);
         bind!(M::Normal, KeyCode::Char('1'), KeyModifiers::NONE,  A::RecentSession1);
@@ -375,6 +381,8 @@ mod tests {
         assert_eq!(parse_action("toggle_view").unwrap(), Action::ToggleView);
         assert_eq!(parse_action("open_editor").unwrap(), Action::OpenEditor);
         assert_eq!(parse_action("recent_session_1").unwrap(), Action::RecentSession1);
+        assert_eq!(parse_action("mark_session").unwrap(), Action::MarkSession);
+        assert_eq!(parse_action("clear_marks").unwrap(), Action::ClearMarks);
     }
 
     #[test]
@@ -400,6 +408,14 @@ mod tests {
         assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('j'), KeyModifiers::NONE), Some(Action::MoveDown));
         assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Down, KeyModifiers::NONE), Some(Action::MoveDown));
         assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('k'), KeyModifiers::NONE), Some(Action::MoveUp));
+    }
+
+    #[test]
+    fn default_keymap_normal_marking() {
+        let km = Keymap::default_bindings();
+        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('m'), KeyModifiers::NONE), Some(Action::MarkSession));
+        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('M'), KeyModifiers::SHIFT), Some(Action::ClearMarks));
+        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('s'), KeyModifiers::NONE), Some(Action::Move));
     }
 
     #[test]

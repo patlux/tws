@@ -68,6 +68,7 @@ pub fn render_worktree_icons(
     highlight_style: Style,
     deleting_label: &dyn Fn(&str) -> Option<String>,
     deleting_icon: &str,
+    is_marked: &dyn Fn(&str) -> bool,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -92,6 +93,8 @@ pub fn render_worktree_icons(
 
             let icon = if deleting {
                 Some((deleting_icon, theme.worktree_meta))
+            } else if is_marked(item_name) {
+                Some(("✓ ", theme.flash))
             } else if is_worktree_row {
                 worktree.map(|w| {
                     if w.launchable {
