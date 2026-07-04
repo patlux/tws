@@ -44,6 +44,7 @@ fn run_tui() -> std::io::Result<()> {
         active_sessions: Vec::new(),
         worktree_sessions: Vec::new(),
         agent_sessions: Vec::new(),
+        pi_statuses: Vec::new(),
     };
 
     let cfg = config::load_config();

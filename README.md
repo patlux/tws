@@ -92,6 +92,23 @@ When `skip_prunable = false`, prunable or missing worktrees are shown with a `�
 
 tws scans tmux panes periodically and identifies running AI coding agents by their child process names — no manual registration. Agents appear automatically under their session in the tree. The optional install-time hooks make tws refresh immediately when an agent starts or stops, instead of waiting for the next scan.
 
+### Pi work status
+
+With the companion [Pi](https://github.com/earendil-works/pi-mono) package [`pi-tmux-session-map`](https://github.com/patlux/pi-tmux-session-map) installed, tws shows live work state for Pi agents directly in the session list:
+
+- `⠋ pi` — Pi is currently working on a prompt (animated spinner)
+- `✓ pi` — Pi finished its last prompt (persists even after Pi exits, until the pane's status is pruned)
+
+The indicator appears on the session row (visible while collapsed) and on the agent entry itself, in both the tree and the agents view.
+
+Install the Pi package:
+
+```bash
+pi install git:github.com/patlux/pi-tmux-session-map
+```
+
+The package writes small JSON status files to `~/.config/tws/pi-status/` on Pi lifecycle events (`agent_start`, `agent_end`, …) and touches `~/.config/tws/agent.trigger`, so tws updates within one poll tick (~250ms). It is a no-op outside tmux. Stale status files are pruned automatically after 24 hours.
+
 ### Importing existing sessions
 
 Already have tmux sessions running? `tws import` walks you through assigning them to threads instead of leaving them orphaned outside the hierarchy.

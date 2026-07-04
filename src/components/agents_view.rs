@@ -2,10 +2,11 @@ use ratatui::layout::Alignment;
 use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
+use crate::core::pi_status::PiIndicator;
 use crate::core::state::FlatAgent;
 use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect, theme: &Theme) {
+pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect, theme: &Theme, pi_spinner: &str) {
     if agents.is_empty() {
         let available_height = area.height.saturating_sub(2);
         let top_padding = available_height.saturating_sub(1) / 2;
@@ -29,16 +30,25 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             Some(slot) => Span::styled(format!("[{}] ", slot), theme.pin_badge),
             None => Span::raw("    "),
         };
-        let line = Line::from(vec![
+        let mut spans = vec![
             badge,
             Span::styled(a.thread_name.clone(), theme.thread),
             Span::styled(" : ", theme.badge_dot),
             Span::styled(a.session_display_name.clone(), theme.session),
             Span::styled(" : ", theme.badge_dot),
-            Span::styled(a.agent_type.icon().to_string(), theme.agent.add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {}", a.agent_display_name), theme.agent),
-        ]);
-        ListItem::new(line)
+        ];
+        match a.pi_indicator {
+            Some(PiIndicator::Working) => {
+                spans.push(Span::styled(format!("{} ", pi_spinner), theme.pi_working));
+            }
+            Some(PiIndicator::Done) => {
+                spans.push(Span::styled("✓ ".to_string(), theme.pi_done));
+            }
+            None => {}
+        }
+        spans.push(Span::styled(a.agent_type.icon().to_string(), theme.agent.add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(format!(" {}", a.agent_display_name), theme.agent));
+        ListItem::new(Line::from(spans))
     };
 
     let mut items: Vec<ListItem<'static>> = Vec::with_capacity(agents.len() + 1);

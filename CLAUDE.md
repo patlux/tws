@@ -15,15 +15,7 @@ No linter or formatter is configured. There's no CI beyond `cargo build && cargo
 
 ## Workflow
 
-Every change — even a tiny one — happens in a **fresh git worktree on a new branch**, then goes out as a PR. Never edit and commit directly on `main` in the primary checkout.
-
-```bash
-git worktree add ../tws-<slug> -b <branch> origin/main
-cd ../tws-<slug>
-# ...edit, commit, push, gh pr create
-```
-
-This keeps in-flight work isolated from `main`, and ensures every change is reviewable on GitHub before it lands.
+Work directly on the current branch in this checkout unless explicitly asked to use a separate branch or worktree.
 
 ## Release
 
@@ -71,6 +63,7 @@ The tree widget (`tui-tree-widget`) uses UUID strings as node identifiers. `stat
 | `core/model.rs` | Data structs: Collection, Thread, Session, AgentSession, AgentType |
 | `core/state.rs` | AppState, CRUD methods, `resolve_selection()`, session/agent lookups |
 | `core/persistence.rs` | JSON save/load to `~/.config/tws/` (state + UI state) |
+| `core/pi_status.rs` | Reader for Pi work-status sidecar files (`~/.config/tws/pi-status/`), written by the `pi-tmux-session-map` Pi package |
 | `core/notes.rs` | File-based notes stored as `.md` in `~/.config/tws/notes/` |
 | `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command` |
 | `tmux/agent_scan.rs` | Detect AI agents by `tmux list-panes` + `ps -e`, match child process names |
@@ -86,6 +79,7 @@ Immediate-mode: all widgets are rebuilt from `AppState` each frame. Components a
 - Sessions are launched detached (`tmux new-session -d`), then attached via `switch-client` (inside tmux) or `attach-session` (outside tmux)
 - Agent detection: `tmux list-panes -a` gets pane PIDs → `ps -e` finds child processes → match against known agent binaries (`claude`, `codex`)
 - Agent renames are in-memory only (not persisted), preserved across 30s scan refreshes via a `renamed` flag and HashMap snapshot/restore in `do_agent_scan()`
+- Pi work status: the companion `pi-tmux-session-map` Pi package writes JSON status files (`working`/`done`/…) per pane to `~/.config/tws/pi-status/` and touches `agent.trigger`; `do_agent_scan()` loads and prunes them, rendering shows a spinner (working) or checkmark (done) on session rows and agent entries
 
 ## Tests
 

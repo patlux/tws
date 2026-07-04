@@ -6,6 +6,7 @@ use ratatui::Frame;
 use tui_tree_widget::{TreeItem, TreeState};
 
 use crate::core::model::Thread;
+use crate::core::pi_status::PiIndicator;
 use crate::core::state::{AppState, SelectedItem};
 use crate::theme::Theme;
 
@@ -16,6 +17,7 @@ pub fn build_tree_items<'a>(
     state: &'a AppState,
     theme: &Theme,
     deleting_label: &dyn Fn(&str) -> Option<String>,
+    pi_spinner: &str,
 ) -> Vec<TreeItem<'a, String>> {
     let mut items: Vec<TreeItem<'a, String>> = Vec::new();
 
@@ -28,7 +30,7 @@ pub fn build_tree_items<'a>(
             .threads
             .iter()
             .filter(|thread| !thread.hidden)
-            .map(|thread| build_thread_item(state, thread, theme, deleting_label))
+            .map(|thread| build_thread_item(state, thread, theme, deleting_label, pi_spinner))
             .collect();
 
         items.push(
@@ -48,7 +50,7 @@ pub fn build_tree_items<'a>(
         }
         for thread in &col.threads {
             if !thread.hidden {
-                items.push(build_thread_item(state, thread, theme, deleting_label));
+                items.push(build_thread_item(state, thread, theme, deleting_label, pi_spinner));
             }
         }
     }
@@ -141,11 +143,33 @@ pub fn render_worktree_icons(
 }
 
 /// Build a TreeItem for a single thread (shared between regular and root threads).
+/// Spans appended to a session row for Pi activity: `⠋ pi` while working,
+/// `✓ pi` once finished. Empty when there is nothing to report.
+fn pi_session_suffix(
+    state: &AppState,
+    tmux_session_name: &str,
+    theme: &Theme,
+    pi_spinner: &str,
+) -> Vec<Span<'static>> {
+    match state.pi_indicator_for_session(tmux_session_name) {
+        Some(PiIndicator::Working) => vec![
+            Span::raw("  "),
+            Span::styled(format!("{} pi", pi_spinner), theme.pi_working),
+        ],
+        Some(PiIndicator::Done) => vec![
+            Span::raw("  "),
+            Span::styled("✓ pi".to_string(), theme.pi_done),
+        ],
+        None => Vec::new(),
+    }
+}
+
 fn build_thread_item<'a>(
     state: &'a AppState,
     thread: &'a Thread,
     theme: &Theme,
     deleting_label: &dyn Fn(&str) -> Option<String>,
+    pi_spinner: &str,
 ) -> TreeItem<'a, String> {
     let mut session_children: Vec<TreeItem<'a, String>> = state
         .active_sessions
@@ -153,37 +177,39 @@ fn build_thread_item<'a>(
         .filter(|s| s.thread_id == thread.id)
         .map(|s| {
             let agents = state.agents_for_session(&s.tmux_session_name);
+            let deleting = deleting_label(&s.tmux_session_name);
+            let is_deleting = deleting.is_some();
+            let display_name = deleting.unwrap_or_else(|| s.display_name.clone());
+            let style = if is_deleting { theme.worktree_meta } else { theme.session };
+            let mut spans = vec![Span::styled(display_name, style)];
+            if !is_deleting {
+                spans.extend(pi_session_suffix(state, &s.tmux_session_name, theme, pi_spinner));
+            }
+            let session_label = Text::from(Line::from(spans));
             if agents.is_empty() {
-                let deleting = deleting_label(&s.tmux_session_name);
-                let is_deleting = deleting.is_some();
-                let display_name = deleting.unwrap_or_else(|| s.display_name.clone());
-                let style = if is_deleting { theme.worktree_meta } else { theme.session };
-                TreeItem::new_leaf(
-                    s.tmux_session_name.clone(),
-                    Text::styled(display_name, style),
-                )
+                TreeItem::new_leaf(s.tmux_session_name.clone(), session_label)
             } else {
                 let agent_children: Vec<TreeItem<'a, String>> = agents
                     .iter()
                     .map(|a| {
-                        let label = Line::from(vec![
-                            Span::styled("╰─ ", theme.agent_connector),
-                            Span::styled(a.agent_type.icon(), theme.agent.add_modifier(Modifier::BOLD)),
-                            Span::styled(format!(" {}", a.display_name), theme.agent),
-                        ]);
-                        TreeItem::new_leaf(
-                            a.pane_id.clone(),
-                            label,
-                        )
+                        let mut spans = vec![Span::styled("╰─ ", theme.agent_connector)];
+                        match state.pi_indicator_for_agent(a) {
+                            Some(PiIndicator::Working) => {
+                                spans.push(Span::styled(format!("{} ", pi_spinner), theme.pi_working));
+                            }
+                            Some(PiIndicator::Done) => {
+                                spans.push(Span::styled("✓ ".to_string(), theme.pi_done));
+                            }
+                            None => {}
+                        }
+                        spans.push(Span::styled(a.agent_type.icon(), theme.agent.add_modifier(Modifier::BOLD)));
+                        spans.push(Span::styled(format!(" {}", a.display_name), theme.agent));
+                        TreeItem::new_leaf(a.pane_id.clone(), Line::from(spans))
                     })
                     .collect();
-                let deleting = deleting_label(&s.tmux_session_name);
-                let is_deleting = deleting.is_some();
-                let display_name = deleting.unwrap_or_else(|| s.display_name.clone());
-                let style = if is_deleting { theme.worktree_meta } else { theme.session };
                 TreeItem::new(
                     s.tmux_session_name.clone(),
-                    Text::styled(display_name, style),
+                    session_label,
                     agent_children,
                 )
                 .expect("pane IDs are unique within a session")

@@ -16,6 +16,7 @@ use crate::components::{agent_preview, agents_view, confirm_modal, error_modal, 
 use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
+use crate::core::pi_status;
 use crate::core::model::{WorktreeSession, slugify};
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::event;
@@ -201,6 +202,10 @@ const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
 const NOTIFICATION_DURATION: Duration = Duration::from_secs(4);
 const DELETE_SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
+/// Braille spinner shown next to Pi agents that are currently working.
+const PI_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// How long "done" markers survive after the Pi pane died before pruning.
+const PI_STATUS_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn expand_home(path: &str) -> PathBuf {
     if path == "~" {
@@ -325,6 +330,11 @@ impl App {
     fn worktree_spinner_frame(&self) -> &'static str {
         let ticks = self.animation_start.elapsed().as_millis() / 180;
         DELETE_SPINNER[(ticks as usize) % DELETE_SPINNER.len()]
+    }
+
+    fn pi_spinner_frame(&self) -> &'static str {
+        let ticks = self.animation_start.elapsed().as_millis() / 120;
+        PI_SPINNER[(ticks as usize) % PI_SPINNER.len()]
     }
 
     fn worktree_delete_progress_labels(&self) -> HashMap<String, String> {
@@ -656,7 +666,8 @@ impl App {
 
             // Tree area or agents flat-list view
             if matches!(self.view_mode, ViewMode::Agents) {
-                agents_view::render(frame, &flat_agents, self.agent_list_cursor, tree_area, &self.theme);
+                let pi_spinner = self.pi_spinner_frame();
+                agents_view::render(frame, &flat_agents, self.agent_list_cursor, tree_area, &self.theme, pi_spinner);
             } else {
                 let block = Block::default();
                 let deleting_labels = self.worktree_delete_progress_labels();
@@ -664,7 +675,8 @@ impl App {
                 let deleting_icon = self.worktree_spinner_frame();
                 let marked_sessions = self.marked_sessions.clone();
                 let is_marked = |session_name: &str| marked_sessions.contains(session_name);
-                let items = tree_view::build_tree_items(&self.state, &self.theme, &deleting_label);
+                let pi_spinner = self.pi_spinner_frame();
+                let items = tree_view::build_tree_items(&self.state, &self.theme, &deleting_label, pi_spinner);
                 if items.is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);
                     let content_height = 4u16;
@@ -2443,6 +2455,7 @@ impl App {
     fn do_agent_scan(&mut self) {
         if self.state.active_sessions.is_empty() {
             self.state.agent_sessions.clear();
+            self.state.pi_statuses.clear();
             return;
         }
 
@@ -2498,6 +2511,18 @@ impl App {
                 }
             }
         }
+
+        // Load Pi work statuses written by the companion Pi extension and
+        // prune stale files for panes that are long gone.
+        let status_dir = persistence::config_dir().join("pi-status");
+        let live_panes: HashSet<String> = self
+            .state
+            .agent_sessions
+            .iter()
+            .map(|a| a.pane_id.clone())
+            .collect();
+        pi_status::prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
+        self.state.pi_statuses = pi_status::load_all(&status_dir);
 
         let path = persistence::config_dir().join("agent.trigger");
         self.last_agent_trigger_mtime = std::fs::metadata(&path)

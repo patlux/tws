@@ -1,6 +1,7 @@
 use uuid::Uuid;
 
-use super::model::{AgentSession, Collection, Thread, Session, WorktreeSession, tmux_session_name_labeled, tmux_session_prefix, tmux_root_session_name_labeled, tmux_root_session_prefix};
+use super::model::{AgentSession, AgentType, Collection, Thread, Session, WorktreeSession, tmux_session_name_labeled, tmux_session_prefix, tmux_root_session_name_labeled, tmux_root_session_prefix};
+use super::pi_status::{PiIndicator, PiStatus, PiWorkState};
 
 pub struct AppState {
     pub collections: Vec<Collection>,
@@ -10,7 +11,11 @@ pub struct AppState {
     pub worktree_sessions: Vec<WorktreeSession>,
     /// Runtime-only: AI agents detected in tmux panes. Never persisted.
     pub agent_sessions: Vec<AgentSession>,
+    /// Runtime-only: Pi work statuses read from `~/.config/tws/pi-status/`. Never persisted.
+    pub pi_statuses: Vec<PiStatus>,
 }
+
+
 
 /// A single agent flattened out of the collection/thread/session hierarchy.
 /// Carries both display strings and the index tuple needed to produce `SelectedItem::Agent`.
@@ -27,6 +32,8 @@ pub struct FlatAgent {
     pub window_index: u32,
     pub pane_id: String,
     pub pin_slot: Option<u8>,
+    /// Pi work indicator (spinner/checkmark), `None` for non-Pi agents or unknown state.
+    pub pi_indicator: Option<PiIndicator>,
 }
 
 /// What the current tree selection points to.
@@ -419,6 +426,48 @@ impl AppState {
             .collect()
     }
 
+    /// What indicator (if any) the session row should show for Pi activity.
+    ///
+    /// - `Working` if any status for this session reports `working` *and* that
+    ///   pane still hosts a live Pi agent (guards against stale files after a crash).
+    /// - `Done` if any status reports `done` — shown even after the Pi process
+    ///   exited, so finished sessions stay recognizable in the list.
+    pub fn pi_indicator_for_session(&self, tmux_session_name: &str) -> Option<PiIndicator> {
+        let mut done = false;
+        for status in self
+            .pi_statuses
+            .iter()
+            .filter(|s| s.tmux_session_name == tmux_session_name)
+        {
+            match status.work_state {
+                PiWorkState::Working => {
+                    let live = self.agent_sessions.iter().any(|a| {
+                        a.agent_type == AgentType::Pi && a.pane_id == status.pane_id
+                    });
+                    if live {
+                        return Some(PiIndicator::Working);
+                    }
+                }
+                PiWorkState::Done => done = true,
+                _ => {}
+            }
+        }
+        if done { Some(PiIndicator::Done) } else { None }
+    }
+
+    /// What indicator (if any) a specific live Pi agent should show.
+    pub fn pi_indicator_for_agent(&self, agent: &AgentSession) -> Option<PiIndicator> {
+        if agent.agent_type != AgentType::Pi {
+            return None;
+        }
+        let status = self.pi_statuses.iter().find(|s| s.pane_id == agent.pane_id)?;
+        match status.work_state {
+            PiWorkState::Working => Some(PiIndicator::Working),
+            PiWorkState::Done => Some(PiIndicator::Done),
+            _ => None,
+        }
+    }
+
     /// Resolve a tree selection to the specific agent it points at.
     pub fn resolve_agent(&self, col_idx: usize, thread_idx: usize, sess_idx: usize, agent_idx: usize) -> Option<&AgentSession> {
         let thread_id = self.collections.get(col_idx)?.threads.get(thread_idx)?.id;
@@ -669,6 +718,7 @@ impl AppState {
                             window_index: agent.window_index,
                             pane_id: agent.pane_id.clone(),
                             pin_slot: agent.pin_slot,
+                            pi_indicator: self.pi_indicator_for_agent(agent),
                         });
                     }
                 }
@@ -719,6 +769,7 @@ impl AppState {
             active_sessions: Vec::new(),
             worktree_sessions: Vec::new(),
             agent_sessions: Vec::new(),
+            pi_statuses: Vec::new(),
         }
     }
 
@@ -744,6 +795,7 @@ impl AppState {
             active_sessions: Vec::new(),
             worktree_sessions: Vec::new(),
             agent_sessions: Vec::new(),
+            pi_statuses: Vec::new(),
         }
     }
 
@@ -1485,5 +1537,103 @@ mod tests {
         }
 
         assert_eq!(state.agent_sessions[0].pin_slot, Some(2));
+    }
+
+    fn make_pi_agent(pane_id: &str, tmux_session_name: &str) -> super::AgentSession {
+        use super::super::model::{AgentSession, AgentType};
+        AgentSession {
+            agent_type: AgentType::Pi,
+            tmux_session_name: tmux_session_name.into(),
+            window_index: 0,
+            pane_id: pane_id.into(),
+            pane_title: String::new(),
+            display_name: "pi".into(),
+            renamed: false,
+            pin_slot: None,
+        }
+    }
+
+    fn make_pi_status(pane_id: &str, tmux_session_name: &str, work_state: PiWorkState) -> PiStatus {
+        PiStatus {
+            pane_id: pane_id.into(),
+            tmux_session_name: tmux_session_name.into(),
+            session_name: None,
+            work_state,
+            updated_at_ms: 0,
+            finished_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn pi_indicator_working_requires_live_pi_agent() {
+        let mut state = AppState::new();
+        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Working));
+
+        // No live agent for that pane → stale "working" is not shown.
+        assert_eq!(state.pi_indicator_for_session("tws_x_y_a"), None);
+
+        state.agent_sessions.push(make_pi_agent("%1", "tws_x_y_a"));
+        assert_eq!(
+            state.pi_indicator_for_session("tws_x_y_a"),
+            Some(PiIndicator::Working)
+        );
+    }
+
+    #[test]
+    fn pi_indicator_done_persists_without_live_agent() {
+        let mut state = AppState::new();
+        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
+        assert_eq!(
+            state.pi_indicator_for_session("tws_x_y_a"),
+            Some(PiIndicator::Done)
+        );
+        // Other sessions are unaffected.
+        assert_eq!(state.pi_indicator_for_session("tws_other"), None);
+    }
+
+    #[test]
+    fn pi_indicator_working_wins_over_done() {
+        let mut state = AppState::new();
+        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
+        state.pi_statuses.push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Working));
+        state.agent_sessions.push(make_pi_agent("%2", "tws_x_y_a"));
+        assert_eq!(
+            state.pi_indicator_for_session("tws_x_y_a"),
+            Some(PiIndicator::Working)
+        );
+    }
+
+    #[test]
+    fn pi_indicator_idle_and_shutdown_show_nothing() {
+        let mut state = AppState::new();
+        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Idle));
+        state.pi_statuses.push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Shutdown));
+        state.agent_sessions.push(make_pi_agent("%1", "tws_x_y_a"));
+        assert_eq!(state.pi_indicator_for_session("tws_x_y_a"), None);
+    }
+
+    #[test]
+    fn pi_indicator_for_agent_ignores_non_pi_agents() {
+        let mut state = AppState::new();
+        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Working));
+        // Claude agent on the same pane id → no Pi indicator.
+        let claude = make_agent("%1");
+        assert_eq!(state.pi_indicator_for_agent(&claude), None);
+
+        let pi = make_pi_agent("%1", "tws_x_y_a");
+        assert_eq!(state.pi_indicator_for_agent(&pi), Some(PiIndicator::Working));
+    }
+
+    #[test]
+    fn all_agents_flat_carries_pi_indicator() {
+        let mut state = AppState::with_sample_data();
+        let session_name = "tws_work_edge-device-pipeline_one".to_string();
+        state.refresh_sessions(&[(session_name.clone(), 0)]);
+        state.agent_sessions.push(make_pi_agent("%1", &session_name));
+        state.pi_statuses.push(make_pi_status("%1", &session_name, PiWorkState::Working));
+
+        let flat = state.all_agents_flat();
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].pi_indicator, Some(PiIndicator::Working));
     }
 }

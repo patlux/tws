@@ -87,6 +87,10 @@ pub struct Theme {
     // Agents
     pub agent: Style,
     pub agent_connector: Style,
+    /// Pi work-status indicator: spinner while working.
+    pub pi_working: Style,
+    /// Pi work-status indicator: checkmark when finished.
+    pub pi_done: Style,
 
     // Badges
     pub badge_dot: Style,
@@ -181,6 +185,8 @@ impl Theme {
             // Agents
             agent: Style::new().fg(agent_color),
             agent_connector: Style::new().fg(muted_text),
+            pi_working: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            pi_done: Style::new().fg(p.green),
 
             // Badges
             badge_dot: Style::new().fg(p.green),
