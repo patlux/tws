@@ -22,7 +22,7 @@ pub fn build_tree_items<'a>(
     let mut items: Vec<TreeItem<'a, String>> = Vec::new();
 
     // Regular collections first
-    for col in &state.collections {
+    for (col_idx, col) in state.collections.iter().enumerate() {
         if col.is_root || col.hidden {
             continue;
         }
@@ -36,7 +36,7 @@ pub fn build_tree_items<'a>(
         items.push(
             TreeItem::new(
                 col.id.to_string(),
-                Text::styled(col.name.as_str(), theme.collection),
+                collection_text(state, col_idx, col.name.as_str(), theme, pi_spinner),
                 children,
             )
             .expect("thread IDs are unique within a collection"),
@@ -143,15 +143,14 @@ pub fn render_worktree_icons(
 }
 
 /// Build a TreeItem for a single thread (shared between regular and root threads).
-/// Spans appended to a session row for Pi activity: `⠋ pi` while working,
-/// `✓ pi` once finished. Empty when there is nothing to report.
-fn pi_session_suffix(
-    state: &AppState,
-    tmux_session_name: &str,
+/// Spans appended to a collection/thread/session row for Pi activity: `⠋ pi`
+/// while working, `✓ pi` once finished. Empty when there is nothing to report.
+fn pi_indicator_suffix(
+    indicator: Option<PiIndicator>,
     theme: &Theme,
     pi_spinner: &str,
 ) -> Vec<Span<'static>> {
-    match state.pi_indicator_for_session(tmux_session_name) {
+    match indicator {
         Some(PiIndicator::Working) => vec![
             Span::raw("  "),
             Span::styled(format!("{} pi", pi_spinner), theme.pi_working),
@@ -162,6 +161,22 @@ fn pi_session_suffix(
         ],
         None => Vec::new(),
     }
+}
+
+fn collection_text(
+    state: &AppState,
+    col_idx: usize,
+    name: &str,
+    theme: &Theme,
+    pi_spinner: &str,
+) -> Text<'static> {
+    let mut spans = vec![Span::styled(name.to_string(), theme.collection)];
+    spans.extend(pi_indicator_suffix(
+        state.pi_indicator_for_collection(col_idx),
+        theme,
+        pi_spinner,
+    ));
+    Text::from(Line::from(spans))
 }
 
 fn build_thread_item<'a>(
@@ -183,7 +198,11 @@ fn build_thread_item<'a>(
             let style = if is_deleting { theme.worktree_meta } else { theme.session };
             let mut spans = vec![Span::styled(display_name, style)];
             if !is_deleting {
-                spans.extend(pi_session_suffix(state, &s.tmux_session_name, theme, pi_spinner));
+                spans.extend(pi_indicator_suffix(
+                    state.pi_indicator_for_session(&s.tmux_session_name),
+                    theme,
+                    pi_spinner,
+                ));
             }
             let session_label = Text::from(Line::from(spans));
             if agents.is_empty() {
@@ -249,12 +268,19 @@ fn build_thread_item<'a>(
     let session_count = session_children.len();
 
     let thread_text = if session_count > 0 {
-        Text::from(Line::from(vec![
+        let mut spans = vec![
             Span::styled(thread.name.as_str(), theme.thread),
             Span::styled(" \u{25CF} ", theme.badge_dot),
             Span::styled(session_count.to_string(), theme.badge_count),
-        ]))
+        ];
+        spans.extend(pi_indicator_suffix(
+            state.pi_indicator_for_thread(thread.id),
+            theme,
+            pi_spinner,
+        ));
+        Text::from(Line::from(spans))
     } else {
+        // No sessions means no Pi status to report on this thread row.
         Text::styled(thread.name.as_str(), theme.thread_dim)
     };
 

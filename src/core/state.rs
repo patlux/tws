@@ -426,6 +426,32 @@ impl AppState {
             .collect()
     }
 
+    fn merge_pi_indicator(current: Option<PiIndicator>, next: Option<PiIndicator>) -> Option<PiIndicator> {
+        match (current, next) {
+            (Some(PiIndicator::Working), _) | (_, Some(PiIndicator::Working)) => Some(PiIndicator::Working),
+            (Some(PiIndicator::Done), _) | (_, Some(PiIndicator::Done)) => Some(PiIndicator::Done),
+            _ => None,
+        }
+    }
+
+    fn latest_pi_status_for_pane(&self, pane_id: &str) -> Option<&PiStatus> {
+        self.pi_statuses
+            .iter()
+            .filter(|s| s.pane_id == pane_id)
+            .max_by_key(|s| s.updated_at_ms)
+    }
+
+    fn latest_pi_statuses_for_session(&self, tmux_session_name: &str) -> Vec<&PiStatus> {
+        self.pi_statuses
+            .iter()
+            .filter(|status| status.tmux_session_name == tmux_session_name)
+            .filter(|status| {
+                self.latest_pi_status_for_pane(&status.pane_id)
+                    .is_some_and(|latest| std::ptr::eq(*status, latest))
+            })
+            .collect()
+    }
+
     /// What indicator (if any) the session row should show for Pi activity.
     ///
     /// - `Working` if any status for this session reports `working` *and* that
@@ -434,11 +460,7 @@ impl AppState {
     ///   exited, so finished sessions stay recognizable in the list.
     pub fn pi_indicator_for_session(&self, tmux_session_name: &str) -> Option<PiIndicator> {
         let mut done = false;
-        for status in self
-            .pi_statuses
-            .iter()
-            .filter(|s| s.tmux_session_name == tmux_session_name)
-        {
+        for status in self.latest_pi_statuses_for_session(tmux_session_name) {
             match status.work_state {
                 PiWorkState::Working => {
                     let live = self.agent_sessions.iter().any(|a| {
@@ -455,12 +477,36 @@ impl AppState {
         if done { Some(PiIndicator::Done) } else { None }
     }
 
+    /// What indicator (if any) a thread row should show for Pi activity in any
+    /// of its active sessions. `Working` wins over `Done`.
+    pub fn pi_indicator_for_thread(&self, thread_id: Uuid) -> Option<PiIndicator> {
+        self.active_sessions
+            .iter()
+            .filter(|s| s.thread_id == thread_id)
+            .fold(None, |acc, session| {
+                Self::merge_pi_indicator(acc, self.pi_indicator_for_session(&session.tmux_session_name))
+            })
+    }
+
+    /// What indicator (if any) a collection row should show for Pi activity in
+    /// any visible thread. `Working` wins over `Done`.
+    pub fn pi_indicator_for_collection(&self, col_idx: usize) -> Option<PiIndicator> {
+        let col = self.collections.get(col_idx)?;
+        col.threads
+            .iter()
+            .enumerate()
+            .filter(|(thread_idx, _)| !self.thread_is_hidden(col_idx, *thread_idx))
+            .fold(None, |acc, (_, thread)| {
+                Self::merge_pi_indicator(acc, self.pi_indicator_for_thread(thread.id))
+            })
+    }
+
     /// What indicator (if any) a specific live Pi agent should show.
     pub fn pi_indicator_for_agent(&self, agent: &AgentSession) -> Option<PiIndicator> {
         if agent.agent_type != AgentType::Pi {
             return None;
         }
-        let status = self.pi_statuses.iter().find(|s| s.pane_id == agent.pane_id)?;
+        let status = self.latest_pi_status_for_pane(&agent.pane_id)?;
         match status.work_state {
             PiWorkState::Working => Some(PiIndicator::Working),
             PiWorkState::Done => Some(PiIndicator::Done),
@@ -1554,12 +1600,21 @@ mod tests {
     }
 
     fn make_pi_status(pane_id: &str, tmux_session_name: &str, work_state: PiWorkState) -> PiStatus {
+        make_pi_status_updated(pane_id, tmux_session_name, work_state, 0)
+    }
+
+    fn make_pi_status_updated(
+        pane_id: &str,
+        tmux_session_name: &str,
+        work_state: PiWorkState,
+        updated_at_ms: u64,
+    ) -> PiStatus {
         PiStatus {
             pane_id: pane_id.into(),
             tmux_session_name: tmux_session_name.into(),
             session_name: None,
             work_state,
-            updated_at_ms: 0,
+            updated_at_ms,
             finished_at_ms: None,
         }
     }
@@ -1601,6 +1656,61 @@ mod tests {
             state.pi_indicator_for_session("tws_x_y_a"),
             Some(PiIndicator::Working)
         );
+    }
+
+    #[test]
+    fn pi_indicator_ignores_older_status_for_same_live_pane() {
+        let mut state = AppState::new();
+        state.pi_statuses.push(make_pi_status_updated(
+            "%22",
+            "tws_init_etb_lp-678",
+            PiWorkState::Working,
+            1000,
+        ));
+        state.pi_statuses.push(make_pi_status_updated(
+            "%22",
+            "tws_init_etb_lp-678",
+            PiWorkState::Done,
+            2000,
+        ));
+        state.agent_sessions.push(make_pi_agent("%22", "tws_init_etb_lp-678"));
+
+        assert_eq!(
+            state.pi_indicator_for_session("tws_init_etb_lp-678"),
+            Some(PiIndicator::Done)
+        );
+        assert_eq!(
+            state.pi_indicator_for_agent(&make_pi_agent("%22", "tws_init_etb_lp-678")),
+            Some(PiIndicator::Done)
+        );
+    }
+
+    #[test]
+    fn pi_indicator_bubbles_to_thread_and_collection() {
+        let mut state = AppState::with_sample_data();
+        let done_session = "tws_work_edge-device-pipeline_one".to_string();
+        let working_session = "tws_work_edge-device-pipeline_two".to_string();
+        state.refresh_sessions(&[(done_session.clone(), 0), (working_session.clone(), 0)]);
+        state.pi_statuses.push(make_pi_status("%1", &done_session, PiWorkState::Done));
+        state.pi_statuses.push(make_pi_status("%2", &working_session, PiWorkState::Working));
+        state.agent_sessions.push(make_pi_agent("%2", &working_session));
+
+        let thread_id = state.collections[0].threads[0].id;
+        assert_eq!(state.pi_indicator_for_thread(thread_id), Some(PiIndicator::Working));
+        assert_eq!(state.pi_indicator_for_collection(0), Some(PiIndicator::Working));
+        assert_eq!(state.pi_indicator_for_collection(1), None);
+    }
+
+    #[test]
+    fn pi_indicator_done_bubbles_when_no_working_session() {
+        let mut state = AppState::with_sample_data();
+        let session_name = "tws_work_edge-device-pipeline_one".to_string();
+        state.refresh_sessions(&[(session_name.clone(), 0)]);
+        state.pi_statuses.push(make_pi_status("%1", &session_name, PiWorkState::Done));
+
+        let thread_id = state.collections[0].threads[0].id;
+        assert_eq!(state.pi_indicator_for_thread(thread_id), Some(PiIndicator::Done));
+        assert_eq!(state.pi_indicator_for_collection(0), Some(PiIndicator::Done));
     }
 
     #[test]
