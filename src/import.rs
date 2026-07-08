@@ -32,6 +32,19 @@ pub fn run() -> io::Result<()> {
     for session_name in &unmanaged {
         println!("── Session: \"{}\" ──", session_name);
 
+        // Track what this iteration created so aborted imports don't leave
+        // orphan collections/threads behind.
+        let mut created_col = false;
+        let mut created_thread_in: Option<usize> = None;
+        fn rollback(collections: &mut Vec<Collection>, created_col: bool, created_thread_in: Option<usize>) {
+            if let Some(ci) = created_thread_in {
+                collections[ci].threads.pop();
+            }
+            if created_col {
+                collections.pop();
+            }
+        }
+
         let col_idx = match pick_collection(&collections)? {
             Some(idx) => idx,
             None => {
@@ -48,13 +61,14 @@ pub fn run() -> io::Result<()> {
                 continue;
             }
             collections.push(Collection::new(&name));
-            modified = true;
+            created_col = true;
         }
 
         let thread_idx = match pick_thread(&collections[col_idx])? {
             Some(idx) => idx,
             None => {
                 println!("Skipping \"{}\".\n", session_name);
+                rollback(&mut collections, created_col, created_thread_in);
                 continue;
             }
         };
@@ -63,15 +77,17 @@ pub fn run() -> io::Result<()> {
             let name = prompt("  New thread name: ")?;
             if name.is_empty() {
                 println!("Skipping \"{}\".\n", session_name);
+                rollback(&mut collections, created_col, created_thread_in);
                 continue;
             }
             collections[col_idx].threads.push(Thread::new(&name));
-            modified = true;
+            created_thread_in = Some(col_idx);
         }
 
         let label = prompt_label()?;
         if label.is_empty() {
             println!("Skipping \"{}\".\n", session_name);
+            rollback(&mut collections, created_col, created_thread_in);
             continue;
         }
 
@@ -86,11 +102,20 @@ pub fn run() -> io::Result<()> {
 
         if confirm("  Proceed?")? {
             match tmux::rename_session(session_name, &new_name) {
-                Ok(()) => println!("  Renamed successfully.\n"),
-                Err(e) => println!("  Error: {}\n", e),
+                Ok(()) => {
+                    println!("  Renamed successfully.\n");
+                    if created_col || created_thread_in.is_some() {
+                        modified = true;
+                    }
+                }
+                Err(e) => {
+                    println!("  Error: {}\n", e);
+                    rollback(&mut collections, created_col, created_thread_in);
+                }
             }
         } else {
             println!("  Skipped.\n");
+            rollback(&mut collections, created_col, created_thread_in);
         }
     }
 
