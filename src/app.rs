@@ -55,6 +55,20 @@ enum ConfirmPurpose {
     DeleteWorktree { repo: PathBuf, path: PathBuf, name: String, tmux_session_name: String, kill_session: bool },
 }
 
+impl ConfirmPurpose {
+    /// Multi-item destructive actions require an explicit `y` — Enter is
+    /// ignored so a double-press can't wipe a whole collection/thread.
+    fn requires_explicit_yes(&self) -> bool {
+        matches!(
+            self,
+            ConfirmPurpose::DeleteCollection { .. }
+                | ConfirmPurpose::DeleteThread { .. }
+                | ConfirmPurpose::KillAllSessions { .. }
+                | ConfirmPurpose::KillMarkedSessions { .. }
+        )
+    }
+}
+
 struct PendingWorktreeDelete {
     parent_selection: Vec<String>,
 }
@@ -815,11 +829,28 @@ impl App {
                 }
                 Mode::Confirm { purpose } => {
                     let message = match purpose {
-                        ConfirmPurpose::DeleteCollection { name, .. } => {
-                            format!("Delete collection \"{}\"?", name)
+                        ConfirmPurpose::DeleteCollection { idx, name } => {
+                            let sessions: usize = self.state.collections.get(*idx)
+                                .map(|col| col.threads.iter()
+                                    .map(|t| self.state.sessions_for_thread(t.id).len())
+                                    .sum())
+                                .unwrap_or(0);
+                            if sessions > 0 {
+                                format!("Delete collection \"{}\" and kill {} session(s)?", name, sessions)
+                            } else {
+                                format!("Delete collection \"{}\"?", name)
+                            }
                         }
-                        ConfirmPurpose::DeleteThread { name, .. } => {
-                            format!("Delete thread \"{}\"?", name)
+                        ConfirmPurpose::DeleteThread { col_idx, thread_idx, name } => {
+                            let sessions = self.state.collections.get(*col_idx)
+                                .and_then(|col| col.threads.get(*thread_idx))
+                                .map(|t| self.state.sessions_for_thread(t.id).len())
+                                .unwrap_or(0);
+                            if sessions > 0 {
+                                format!("Delete thread \"{}\" and kill {} session(s)?", name, sessions)
+                            } else {
+                                format!("Delete thread \"{}\"?", name)
+                            }
                         }
                         ConfirmPurpose::KillSession { session_name } => {
                             format!("Kill session \"{}\"?", session_name)
@@ -1405,6 +1436,15 @@ impl App {
         let action = self.keymap.resolve(KeyMode::ConfirmModal, code, modifiers);
         match action {
             Some(Action::Confirm) => {
+                // Multi-item destructive confirms only accept an explicit `y`,
+                // so a double-tapped Enter can't wipe a collection/thread.
+                if code == KeyCode::Enter {
+                    if let Mode::Confirm { purpose } = &self.mode {
+                        if purpose.requires_explicit_yes() {
+                            return;
+                        }
+                    }
+                }
                 self.execute_confirm();
             }
             Some(Action::Cancel) => {
