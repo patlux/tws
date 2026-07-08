@@ -3,9 +3,11 @@ pub mod palette;
 
 use std::collections::HashMap;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::core::model::slugify;
 use crate::core::persistence;
 
 use keys::{KeyMode, Keymap};
@@ -44,30 +46,64 @@ pub struct WorktreeConfig {
     pub skip_prunable: Option<bool>,
 }
 
-/// Resolve the configured start directory for a collection/thread pair.
+/// Outcome of resolving a start directory, distinguishing a thread-specific
+/// entry (use the path verbatim) from a collection/root default (the caller
+/// may probe for a `<path>/<thread>` subdirectory).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartDirMatch<'a> {
+    /// A `(collection, thread)` entry matched — use the path as-is.
+    Thread(&'a str),
+    /// Only a collection/root default matched — auto-subdir probing applies.
+    Default(&'a str),
+}
+
+impl<'a> StartDirMatch<'a> {
+    pub fn path(self) -> &'a str {
+        match self {
+            StartDirMatch::Thread(p) | StartDirMatch::Default(p) => p,
+        }
+    }
+}
+
+/// Resolve the configured start directory for a collection/thread pair,
+/// reporting whether a thread-specific entry or a collection/root default
+/// matched.
 ///
 /// `collection = None` addresses root-level threads. Thread-specific entries
 /// win over collection/root defaults. Later entries win within the same
 /// specificity, matching common config override behavior.
-pub fn resolve_start_dir<'a>(
+pub fn resolve_start_dir_match<'a>(
     start_dirs: &'a [StartDirConfig],
     collection: Option<&str>,
     thread: &str,
-) -> Option<&'a str> {
+) -> Option<StartDirMatch<'a>> {
+    if let Some(cfg) = start_dirs.iter().rev().find(|cfg| {
+        cfg.collection.as_deref() == collection && cfg.thread.as_deref() == Some(thread)
+    }) {
+        return Some(StartDirMatch::Thread(cfg.path.as_str()));
+    }
     start_dirs
         .iter()
         .rev()
-        .find(|cfg| {
-            cfg.collection.as_deref() == collection
-                && cfg.thread.as_deref() == Some(thread)
-        })
-        .or_else(|| {
-            start_dirs
-                .iter()
-                .rev()
-                .find(|cfg| cfg.collection.as_deref() == collection && cfg.thread.is_none())
-        })
-        .map(|cfg| cfg.path.as_str())
+        .find(|cfg| cfg.collection.as_deref() == collection && cfg.thread.is_none())
+        .map(|cfg| StartDirMatch::Default(cfg.path.as_str()))
+}
+
+/// Probe `base` for a subdirectory matching a thread name. Tries the exact
+/// thread name first, then its slug. Returns the first existing directory.
+pub fn auto_thread_dir(base: &Path, thread_name: &str) -> Option<PathBuf> {
+    let slug = slugify(thread_name);
+    let mut candidates = vec![thread_name.to_string()];
+    if slug != thread_name {
+        candidates.push(slug);
+    }
+    candidates.into_iter().find_map(|name| {
+        if name.is_empty() {
+            return None;
+        }
+        let dir = base.join(name);
+        dir.is_dir().then_some(dir)
+    })
 }
 
 impl WorktreeConfig {
@@ -244,15 +280,15 @@ mod tests {
         "##).unwrap();
 
         assert_eq!(
-            resolve_start_dir(&config.start_dirs, Some("Personal"), "tws"),
-            Some("~/dev/Personal/thirdparty/tws")
+            resolve_start_dir_match(&config.start_dirs, Some("Personal"), "tws"),
+            Some(StartDirMatch::Thread("~/dev/Personal/thirdparty/tws"))
         );
         assert_eq!(
-            resolve_start_dir(&config.start_dirs, Some("Personal"), "other"),
-            Some("~/dev/Personal")
+            resolve_start_dir_match(&config.start_dirs, Some("Personal"), "other"),
+            Some(StartDirMatch::Default("~/dev/Personal"))
         );
         assert_eq!(
-            resolve_start_dir(&config.start_dirs, Some("Work"), "tws"),
+            resolve_start_dir_match(&config.start_dirs, Some("Work"), "tws"),
             None
         );
     }
@@ -269,15 +305,15 @@ mod tests {
         "##).unwrap();
 
         assert_eq!(
-            resolve_start_dir(&config.start_dirs, None, "scratch"),
-            Some("~/tmp/scratch")
+            resolve_start_dir_match(&config.start_dirs, None, "scratch"),
+            Some(StartDirMatch::Thread("~/tmp/scratch"))
         );
         assert_eq!(
-            resolve_start_dir(&config.start_dirs, None, "general"),
-            Some("~/tmp/root-default")
+            resolve_start_dir_match(&config.start_dirs, None, "general"),
+            Some(StartDirMatch::Default("~/tmp/root-default"))
         );
         assert_eq!(
-            resolve_start_dir(&config.start_dirs, Some("Personal"), "scratch"),
+            resolve_start_dir_match(&config.start_dirs, Some("Personal"), "scratch"),
             None
         );
     }
@@ -297,9 +333,27 @@ mod tests {
         "##).unwrap();
 
         assert_eq!(
-            resolve_start_dir(&config.start_dirs, Some("Personal"), "tws"),
-            Some("~/new")
+            resolve_start_dir_match(&config.start_dirs, Some("Personal"), "tws"),
+            Some(StartDirMatch::Thread("~/new"))
         );
+    }
+
+    #[test]
+    fn auto_thread_dir_matches_exact_then_slug() {
+        let base = std::env::temp_dir().join(format!("tws-auto-{}", uuid::Uuid::new_v4()));
+        let exact = base.join("hackerschau");
+        fs::create_dir_all(&exact).unwrap();
+        assert_eq!(auto_thread_dir(&base, "hackerschau"), Some(exact.clone()));
+
+        // Non-slug name resolves via slugify fallback.
+        let slug_dir = base.join("my-thread");
+        fs::create_dir_all(&slug_dir).unwrap();
+        assert_eq!(auto_thread_dir(&base, "My Thread"), Some(slug_dir));
+
+        // No matching subdir.
+        assert_eq!(auto_thread_dir(&base, "missing"), None);
+
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

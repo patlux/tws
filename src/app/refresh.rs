@@ -156,24 +156,61 @@ impl App {
     }
 
     /// Worktree discovery jobs for all expanded, configured threads.
+    ///
+    /// Explicit `[[worktrees]]` entries come first. Then, for any expanded
+    /// thread without an explicit entry whose auto start-dir subdirectory is a
+    /// git repo, an auto job with default discovery options is appended.
     pub(super) fn expanded_worktree_jobs(&self) -> Vec<(uuid::Uuid, PathBuf, DiscoverOptions)> {
-        self.worktree_configs
-            .iter()
-            .filter_map(|cfg| {
-                let (col_idx, thread_idx) = self.find_thread_for_worktree_config(cfg)?;
-                if !self.is_worktree_thread_expanded(col_idx, thread_idx) {
-                    return None;
+        let mut jobs: Vec<(uuid::Uuid, PathBuf, DiscoverOptions)> = Vec::new();
+        let mut covered: HashSet<uuid::Uuid> = HashSet::new();
+
+        for cfg in &self.worktree_configs {
+            let Some((col_idx, thread_idx)) = self.find_thread_for_worktree_config(cfg) else {
+                continue;
+            };
+            let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+            covered.insert(thread_id);
+            if !self.is_worktree_thread_expanded(col_idx, thread_idx) {
+                continue;
+            }
+            let repo = expand_home(&cfg.repo);
+            let options = DiscoverOptions {
+                include_main: cfg.include_main(),
+                include_detached: cfg.include_detached(),
+                skip_prunable: cfg.skip_prunable(),
+            };
+            jobs.push((thread_id, repo, options));
+        }
+
+        for (col_idx, col) in self.state.collections.iter().enumerate() {
+            for (thread_idx, thread) in col.threads.iter().enumerate() {
+                if covered.contains(&thread.id)
+                    || !self.is_worktree_thread_expanded(col_idx, thread_idx)
+                {
+                    continue;
                 }
-                let repo = expand_home(&cfg.repo);
-                let options = DiscoverOptions {
-                    include_main: cfg.include_main(),
-                    include_detached: cfg.include_detached(),
-                    skip_prunable: cfg.skip_prunable(),
-                };
-                let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
-                Some((thread_id, repo, options))
-            })
-            .collect()
+                if let Some(repo) = self.auto_worktree_repo(col_idx, thread_idx) {
+                    jobs.push((thread.id, repo, DiscoverOptions::default()));
+                }
+            }
+        }
+
+        jobs
+    }
+
+    /// Resolve an auto worktree repo for a thread: a collection/root default
+    /// `[[start_dirs]]` whose `<path>/<thread>` subdirectory exists and is a
+    /// git repository. Returns `None` for thread-specific start dirs.
+    pub(super) fn auto_worktree_repo(&self, col_idx: usize, thread_idx: usize) -> Option<PathBuf> {
+        let col = self.state.collections.get(col_idx)?;
+        let thread = col.threads.get(thread_idx)?;
+        let collection = (!col.is_root).then_some(col.name.as_str());
+        let spec = config::resolve_start_dir_match(&self.start_dir_configs, collection, &thread.name)?;
+        let config::StartDirMatch::Default(path) = spec else {
+            return None;
+        };
+        let dir = config::auto_thread_dir(&expand_home(path), &thread.name)?;
+        dir.join(".git").exists().then_some(dir)
     }
 
     /// Synchronous worktree refresh — used when the user expands/collapses

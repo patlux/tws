@@ -1460,7 +1460,7 @@ impl App {
         } else {
             Some(col.name.as_str())
         };
-        let Some(spec) = config::resolve_start_dir(
+        let Some(spec) = config::resolve_start_dir_match(
             &self.start_dir_configs,
             collection,
             &thread.name,
@@ -1468,10 +1468,17 @@ impl App {
             return Ok(None);
         };
 
-        let path = expand_home(spec);
-        if !path.is_absolute() {
-            return Err(format!("Start dir must be absolute: {}", spec));
+        let base = expand_home(spec.path());
+        if !base.is_absolute() {
+            return Err(format!("Start dir must be absolute: {}", spec.path()));
         }
+        // For a collection/root default, prefer a `<base>/<thread>` subdir when present.
+        let path = match spec {
+            config::StartDirMatch::Default(_) => {
+                config::auto_thread_dir(&base, &thread.name).unwrap_or(base)
+            }
+            config::StartDirMatch::Thread(_) => base,
+        };
         if !path.is_dir() {
             return Err(format!("Start dir missing: {}", path.display()));
         }

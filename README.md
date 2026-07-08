@@ -67,6 +67,8 @@ path = "~/tmp/scratch"
 
 With this config, sessions created under `Personal / tws` start in `~/dev/Personal/thirdparty/tws`, other `Personal` threads start in `~/dev/Personal`, and the root-level `scratch` thread starts in `~/tmp/scratch`. Paths must resolve to existing absolute directories. `~` is expanded. Worktree entries still use their own worktree path.
 
+When only a collection/root default matches (no thread-specific entry), tws looks for a subdirectory named after the thread and uses it when present. It tries the exact thread name first, then its slug. For example, with the `Personal` default above, a thread named `hackerschau` starts in `~/dev/Personal/hackerschau` if that directory exists, otherwise in `~/dev/Personal`. Thread-specific entries always win over this auto-detection.
+
 ### Git worktrees
 
 Optional `[[worktrees]]` config entries show Git worktrees as launchable sessions under a thread. Worktrees are rendered dimmed until they are running. Press `Enter` on one to create a tmux session in that worktree's directory and attach to it.
@@ -87,6 +89,10 @@ skip_prunable = true
 ```
 
 When `skip_prunable = false`, prunable or missing worktrees are shown with a `✕` marker and a `prunable`/`missing` label. They are informational only and cannot be launched.
+
+#### Automatic worktrees
+
+Threads that resolve to an auto start-dir subdirectory (see [Start directories](#start-directories)) also get worktrees automatically when that subdirectory is a Git repository — no `[[worktrees]]` entry required. Expand the thread to discover them, using the default options (`include_main`, `include_detached`, `skip_prunable`). Add an explicit `[[worktrees]]` entry for the thread to override these defaults; explicit entries take precedence over auto-detection.
 
 ### Agent detection
 
