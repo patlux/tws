@@ -66,6 +66,18 @@ fn run_tui() -> std::io::Result<()> {
         pi_statuses: Vec::new(),
     };
 
+    // Warn when another tws instance is live — state.json is last-writer-wins.
+    let _lock = match persistence::acquire_instance_lock() {
+        persistence::LockState::Acquired(guard) => Some(guard),
+        persistence::LockState::HeldByOther(pid) => {
+            eprintln!("tws: another instance is running (pid {}) — changes may overwrite each other", pid);
+            eprintln!("tws: press Enter to continue anyway, Ctrl+C to abort");
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            None
+        }
+    };
+
     let cfg = config::load_config();
     let palette = config::resolve_palette(&cfg);
     let theme = theme::Theme::build(&palette);

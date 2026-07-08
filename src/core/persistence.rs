@@ -82,6 +82,73 @@ fn state_file() -> PathBuf {
     config_dir().join("state.json")
 }
 
+/// Best-effort single-instance lock. Holds `tws.lock` (containing our PID)
+/// for the process lifetime; removed on clean exit via Drop.
+pub struct LockGuard {
+    path: PathBuf,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Outcome of trying to take the instance lock.
+pub enum LockState {
+    /// We hold the lock now.
+    Acquired(LockGuard),
+    /// Another live tws process (PID) already holds it. State changes are
+    /// last-writer-wins across instances — caller should warn the user.
+    HeldByOther(u32),
+}
+
+pub fn acquire_instance_lock() -> LockState {
+    let Ok(dir) = ensure_config_dir() else {
+        // Can't lock without a config dir; saves will fail loudly later anyway.
+        return LockState::Acquired(LockGuard { path: PathBuf::from("/nonexistent/tws.lock") });
+    };
+    let path = dir.join("tws.lock");
+
+    loop {
+        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                use io::Write;
+                let _ = write!(f, "{}", std::process::id());
+                return LockState::Acquired(LockGuard { path });
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let holder = fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok());
+                match holder {
+                    Some(pid) if pid != std::process::id() && process_alive(pid) => {
+                        return LockState::HeldByOther(pid);
+                    }
+                    _ => {
+                        // Stale lock (dead process or unreadable) — reclaim.
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
+                }
+            }
+            Err(_) => {
+                return LockState::Acquired(LockGuard { path });
+            }
+        }
+    }
+}
+
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 pub fn load() -> io::Result<Vec<Collection>> {
     let path = state_file();
     if !path.exists() {
