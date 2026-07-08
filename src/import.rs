@@ -8,7 +8,7 @@ pub fn run() -> io::Result<()> {
     let all_sessions = tmux::list_sessions();
     let unmanaged: Vec<&String> = all_sessions
         .iter()
-        .filter(|name| !name.starts_with("tws_"))
+        .filter(|name| !name.starts_with("tws_") && !name.starts_with("twsr_"))
         .collect();
 
     if unmanaged.is_empty() {

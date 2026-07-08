@@ -43,7 +43,15 @@ pub fn save_ui(ui: &UiState) -> io::Result<()> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;
     let data = serde_json::to_string_pretty(ui)?;
-    fs::write(ui_state_file(), data)?;
+    write_atomic(&ui_state_file(), &data)?;
+    Ok(())
+}
+
+/// Write via temp file + rename so a crash mid-write never corrupts the target.
+fn write_atomic(path: &std::path::Path, data: &str) -> io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, data)?;
+    fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -73,7 +81,7 @@ pub fn save(collections: &[Collection]) -> io::Result<()> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;
     let data = serde_json::to_string_pretty(collections)?;
-    fs::write(state_file(), data)?;
+    write_atomic(&state_file(), &data)?;
     Ok(())
 }
 

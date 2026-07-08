@@ -65,7 +65,7 @@ pub fn remove(repo: &Path, path: &Path) -> Result<(), String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["worktree", "remove"])
+        .args(["worktree", "remove", "--"])
         .arg(path)
         .output()
         .map_err(|err| format!("Failed to run git: {}", err))?;
