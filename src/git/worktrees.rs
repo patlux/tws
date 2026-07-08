@@ -10,6 +10,7 @@ pub struct DiscoveredWorktree {
     pub detached: bool,
     pub prunable: bool,
     pub is_main: bool,
+    pub bare: bool,
 }
 
 impl DiscoveredWorktree {
@@ -108,6 +109,7 @@ fn parse_porcelain(input: &str, options: DiscoverOptions) -> Vec<DiscoveredWorkt
                 detached: false,
                 prunable: false,
                 is_main,
+                bare: false,
             });
         } else if let Some(entry) = current.as_mut() {
             if let Some(head) = line.strip_prefix("HEAD ") {
@@ -118,6 +120,8 @@ fn parse_porcelain(input: &str, options: DiscoverOptions) -> Vec<DiscoveredWorkt
                 entry.detached = true;
             } else if line == "prunable" || line.starts_with("prunable ") {
                 entry.prunable = true;
+            } else if line == "bare" {
+                entry.bare = true;
             }
         }
     }
@@ -129,6 +133,8 @@ fn parse_porcelain(input: &str, options: DiscoverOptions) -> Vec<DiscoveredWorkt
     let mut seen_paths = HashSet::new();
     entries
         .into_iter()
+        // A bare repo entry is not a launchable working directory.
+        .filter(|entry| !entry.bare)
         .filter(|entry| options.include_main || !entry.is_main)
         .filter(|entry| options.include_detached || !entry.detached)
         .filter(|entry| !options.skip_prunable || !entry.prunable)
@@ -203,6 +209,24 @@ mod tests {
         assert!(!entries[1].path.is_dir());
 
         fs::remove_dir_all(main).unwrap();
+    }
+
+    #[test]
+    fn bare_repo_entry_is_excluded() {
+        let bare = temp_dir("bare");
+        let wt = temp_dir("wt");
+        let input = format!(
+            "worktree {}\nbare\n\nworktree {}\nHEAD abc\nbranch refs/heads/topic\n",
+            bare.display(),
+            wt.display()
+        );
+
+        let entries = parse_porcelain(&input, DiscoverOptions::default());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label_source(), "topic");
+
+        fs::remove_dir_all(bare).unwrap();
+        fs::remove_dir_all(wt).unwrap();
     }
 
     #[test]

@@ -173,15 +173,37 @@ fn identify_agent(command: &str) -> Option<AgentType> {
 
 fn identify_agent_script<'a>(tokens: impl Iterator<Item = &'a str>) -> Option<AgentType> {
     for token in tokens {
+        if !token.contains('/') {
+            continue;
+        }
         let components: Vec<&str> = token.split('/').collect();
-        if components.iter().any(|&c| c == "codex") {
-            return Some(AgentType::Codex);
-        }
-        if components.iter().any(|&c| c == "claude" || c == "claude-code") {
-            return Some(AgentType::ClaudeCode);
-        }
-        if components.iter().any(|&c| c == "pi" || c == "pi-coding-agent") {
-            return Some(AgentType::Pi);
+        // Only trust package-ish path components: either directly under a
+        // node_modules/ (or one level deeper for scoped packages), or a Nix
+        // store path containing the agent name. A bare project directory
+        // called "pi" or "claude" must not match.
+        let is_pkg_component = |idx: usize| {
+            components
+                .get(..idx)
+                .is_some_and(|prefix| {
+                    prefix.iter().rev().take(2).any(|&c| c == "node_modules")
+                })
+                || components
+                    .get(idx.wrapping_sub(1))
+                    .is_some_and(|&parent| parent == "bin" || parent.contains("-pi-coding-agent-"))
+        };
+        for (idx, &c) in components.iter().enumerate() {
+            let matched = match c {
+                "codex" => Some(AgentType::Codex),
+                "claude" | "claude-code" => Some(AgentType::ClaudeCode),
+                "pi" | "pi-coding-agent" => Some(AgentType::Pi),
+                _ if c.contains("-pi-coding-agent-") => Some(AgentType::Pi),
+                _ => None,
+            };
+            if let Some(agent) = matched {
+                if is_pkg_component(idx) || c.contains("-pi-coding-agent-") {
+                    return Some(agent);
+                }
+            }
         }
     }
     None

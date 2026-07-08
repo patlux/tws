@@ -567,6 +567,11 @@ impl AppState {
     pub fn refresh_sessions(&mut self, live_tmux_sessions: &[(String, i64)]) {
         self.active_sessions.clear();
 
+        // Threads whose names slugify identically ("Work" vs "work!") share a
+        // prefix; without dedup the same tmux session would appear under every
+        // matching thread and kill/notes would act on it multiple times.
+        let mut claimed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
         for col in &self.collections {
             for thread in &col.threads {
                 let prefix = if col.is_root {
@@ -578,7 +583,7 @@ impl AppState {
                     // Match "prefix_label" where label is any non-empty suffix
                     if let Some(rest) = session_name.strip_prefix(&prefix) {
                         if let Some(label) = rest.strip_prefix('_') {
-                            if !label.is_empty() {
+                            if !label.is_empty() && claimed.insert(session_name.as_str()) {
                                 self.active_sessions.push(Session {
                                     tmux_session_name: session_name.clone(),
                                     display_name: label.to_string(),
