@@ -23,14 +23,15 @@ pub fn build_tree_items<'a>(
 
     // Regular collections first
     for (col_idx, col) in state.collections.iter().enumerate() {
-        if col.is_root || col.hidden {
+        if col.is_root || state.collection_is_hidden(col_idx) {
             continue;
         }
         let children: Vec<TreeItem<'a, String>> = col
             .threads
             .iter()
-            .filter(|thread| !thread.hidden)
-            .map(|thread| build_thread_item(state, thread, theme, deleting_label, pi_spinner))
+            .enumerate()
+            .filter(|(thread_idx, _)| !state.thread_is_hidden(col_idx, *thread_idx))
+            .map(|(_, thread)| build_thread_item(state, thread, theme, deleting_label, pi_spinner))
             .collect();
 
         items.push(
@@ -44,12 +45,12 @@ pub fn build_tree_items<'a>(
     }
 
     // Root threads at the bottom, rendered as root-level items
-    for col in &state.collections {
+    for (col_idx, col) in state.collections.iter().enumerate() {
         if !col.is_root {
             continue;
         }
-        for thread in &col.threads {
-            if !thread.hidden {
+        for (thread_idx, thread) in col.threads.iter().enumerate() {
+            if !state.thread_is_hidden(col_idx, thread_idx) {
                 items.push(build_thread_item(state, thread, theme, deleting_label, pi_spinner));
             }
         }

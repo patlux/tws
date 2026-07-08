@@ -42,7 +42,12 @@ impl App {
         let recent_count = recent_data.len() as u16;
         let show_recent = !recent_data.is_empty();
         let hidden_count = self.state.hidden_count();
-        let empty_hint = if hidden_count > 0 {
+        let empty_hint = if self.state.active_filter {
+            format!(
+                "Active filter on — nothing is active. Press {} to show all.",
+                self.keymap.key_hint(KeyMode::Normal, Action::ToggleActiveFilter),
+            )
+        } else if hidden_count > 0 {
             format!(
                 "{} hidden. Press {} to show all hidden collections and threads.",
                 hidden_count,
@@ -282,7 +287,7 @@ impl App {
             // Status bar
             let active_count = self.state.active_sessions.len();
             let status_ctx = self.status_context(&selected_item);
-            status_bar::render(frame, status_ctx, chunks[status_idx], active_count, flash_msg.as_deref(), &self.theme, &self.keymap);
+            status_bar::render(frame, status_ctx, chunks[status_idx], active_count, self.state.active_filter, flash_msg.as_deref(), &self.theme, &self.keymap);
 
             // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {

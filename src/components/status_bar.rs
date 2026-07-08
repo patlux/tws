@@ -30,7 +30,7 @@ pub enum StatusContext {
     AgentsViewSlotAssign { target_path: String },
 }
 
-pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_count: usize, flash: Option<&str>, theme: &Theme, keymap: &Keymap) {
+pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_count: usize, filter_active: bool, flash: Option<&str>, theme: &Theme, keymap: &Keymap) {
     // Slot-assign mode renders a custom prompt instead of the hint row.
     let slot_assign_prompt: Option<String> = match &ctx {
         StatusContext::AgentsViewSlotAssign { target_path } => {
@@ -46,6 +46,7 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
             (keymap.key_hint(KeyMode::Normal, Action::Add),            "add thread"),
             (keymap.key_hint(KeyMode::Normal, Action::AddCollection),  "add collection"),
             (keymap.key_hint(KeyMode::Normal, Action::ShowHidden),     "show hidden"),
+            (keymap.key_hint(KeyMode::Normal, Action::ToggleActiveFilter), "filter"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
             (keymap.key_hint(KeyMode::Normal, Action::ExpandAll),      "toggle all"),
         ],
@@ -169,12 +170,15 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, active_session_
         }
     }
 
-    // Right side: session count or app name
-    let right_text = if active_session_count > 0 {
+    // Right side: session count or app name, plus filter indicator
+    let mut right_text = if active_session_count > 0 {
         format!("{} active ", active_session_count)
     } else {
         "tws ".to_string()
     };
+    if filter_active {
+        right_text = format!("[filtered] {}", right_text);
+    }
     let right_line = Line::from(Span::styled(&*right_text, theme.statusbar_desc));
     let right_width = right_text.len() as u16;
 

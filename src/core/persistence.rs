@@ -10,6 +10,9 @@ pub struct UiState {
     pub selected: Option<Vec<String>>,
     #[serde(default)]
     pub agents_view_active: bool,
+    /// Whether the active filter (hide threads without live sessions) is on.
+    #[serde(default)]
+    pub active_filter: bool,
     #[serde(default)]
     pub agent_list_cursor: usize,
     /// Persisted pin assignments: `(pane_id, slot)`. Reapplied on first scan after startup;
@@ -250,6 +253,22 @@ mod tests {
         assert!(!collections[0].is_root);
         assert!(!collections[0].hidden);
         assert!(!collections[0].threads[0].hidden);
+    }
+
+    #[test]
+    fn ui_state_without_active_filter_defaults_false() {
+        // Old ui-state.json predating the active_filter field loads cleanly.
+        let json = r#"{"open_nodes": [], "selected": null}"#;
+        let ui: UiState = serde_json::from_str(json).unwrap();
+        assert!(!ui.active_filter);
+    }
+
+    #[test]
+    fn ui_state_active_filter_round_trip() {
+        let ui = UiState { active_filter: true, ..UiState::default() };
+        let json = serde_json::to_string(&ui).unwrap();
+        let loaded: UiState = serde_json::from_str(&json).unwrap();
+        assert!(loaded.active_filter);
     }
 
     #[test]

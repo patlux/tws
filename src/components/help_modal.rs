@@ -7,7 +7,7 @@ use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::theme::Theme;
 
 const WIDTH_PERCENT: u16 = 74;
-const POPUP_HEIGHT: u16 = 29;
+const POPUP_HEIGHT: u16 = 30;
 
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, keymap: &Keymap, scroll: u16) {
     let popup = centered_rect(WIDTH_PERCENT, popup_height(area), area);
@@ -62,6 +62,7 @@ fn help_lines(theme: &Theme, keymap: &Keymap) -> Vec<Line<'static>> {
         row(keymap.key_hint(KeyMode::Normal, Action::ToggleSelect), "toggle expand", theme),
         row(keymap.key_hint(KeyMode::Normal, Action::ExpandAll), "expand / collapse all", theme),
         row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::Hide), keymap.key_hint(KeyMode::Normal, Action::ShowHidden)), "hide / show hidden", theme),
+        row(keymap.key_hint(KeyMode::Normal, Action::ToggleActiveFilter), "toggle active-only filter", theme),
         blank(),
         section("Notes", theme),
         row("Tab / Ctrl+→", "focus notes", theme),

@@ -64,6 +64,7 @@ fn run_tui() -> std::io::Result<()> {
         worktree_sessions: Vec::new(),
         agent_sessions: Vec::new(),
         pi_statuses: Vec::new(),
+        active_filter: false,
     };
 
     // Warn when another tws instance is live — state.json is last-writer-wins.

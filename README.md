@@ -179,6 +179,7 @@ The status bar shows context-aware key hints for whatever is selected. The essen
 | `e` | Toggle expand all |
 | `1`–`5` | Attach to a recent session |
 | `/` | Fuzzy-find and attach to any session |
+| `f` | Toggle active-only filter (hide threads without live sessions) |
 | `v` | Toggle agents view |
 | `Tab` | Focus the notes panel |
 | `q` | Quit |
@@ -246,6 +247,7 @@ finder     = "/"
 help       = "?"
 hide       = "H"
 show_hidden = "u"
+toggle_active_filter = "f"
 
 [keys.agents]
 toggle_view = "v"

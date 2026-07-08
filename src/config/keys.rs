@@ -37,6 +37,7 @@ pub enum Action {
     ClearMarks,
     Hide,
     ShowHidden,
+    ToggleActiveFilter,
     PinAgent,
     PinAgentSlot,
     /// First press arms, second press jumps to the top (vim `gg`).
@@ -151,6 +152,7 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "clear_marks" => Ok(Action::ClearMarks),
         "hide" => Ok(Action::Hide),
         "show_hidden" => Ok(Action::ShowHidden),
+        "toggle_active_filter" => Ok(Action::ToggleActiveFilter),
         "pin_agent" => Ok(Action::PinAgent),
         "pin_agent_slot" => Ok(Action::PinAgentSlot),
         "jump_top" => Ok(Action::JumpTop),
@@ -231,6 +233,7 @@ impl Keymap {
         bind!(M::Normal, KeyCode::Char('s'), KeyModifiers::NONE,  A::Move);
         bind!(M::Normal, KeyCode::Char('H'), KeyModifiers::SHIFT, A::Hide);
         bind!(M::Normal, KeyCode::Char('u'), KeyModifiers::NONE,  A::ShowHidden);
+        bind!(M::Normal, KeyCode::Char('f'), KeyModifiers::NONE,  A::ToggleActiveFilter);
         bind!(M::Normal, KeyCode::Char('/'), KeyModifiers::NONE,  A::Finder);
         bind!(M::Normal, KeyCode::Char('?'), KeyModifiers::NONE,  A::Help);
         bind!(M::Normal, KeyCode::Char('e'), KeyModifiers::NONE,  A::ExpandAll);
@@ -415,6 +418,7 @@ mod tests {
         assert_eq!(parse_action("help").unwrap(), Action::Help);
         assert_eq!(parse_action("hide").unwrap(), Action::Hide);
         assert_eq!(parse_action("show_hidden").unwrap(), Action::ShowHidden);
+        assert_eq!(parse_action("toggle_active_filter").unwrap(), Action::ToggleActiveFilter);
         assert_eq!(parse_action("open_editor").unwrap(), Action::OpenEditor);
         assert_eq!(parse_action("recent_session_1").unwrap(), Action::RecentSession1);
         assert_eq!(parse_action("mark_session").unwrap(), Action::MarkSession);

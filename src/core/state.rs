@@ -13,6 +13,9 @@ pub struct AppState {
     pub agent_sessions: Vec<AgentSession>,
     /// Runtime-only: Pi work statuses read from `~/.config/tws/pi-status/`. Never persisted.
     pub pi_statuses: Vec<PiStatus>,
+    /// When true, threads without live sessions (and their worktrees, and
+    /// collections left empty) are treated as hidden. Persisted in UiState.
+    pub active_filter: bool,
 }
 
 
@@ -251,10 +254,21 @@ impl AppState {
     }
 
     pub fn collection_is_hidden(&self, idx: usize) -> bool {
-        self.collections
-            .get(idx)
-            .map(|col| !col.is_root && col.hidden)
-            .unwrap_or(false)
+        let Some(col) = self.collections.get(idx) else {
+            return false;
+        };
+        if col.is_root {
+            return false;
+        }
+        if col.hidden {
+            return true;
+        }
+        // Active filter: a collection with no live session in any visible thread is hidden.
+        self.active_filter
+            && !col
+                .threads
+                .iter()
+                .any(|t| !t.hidden && self.thread_has_live_session(t.id))
     }
 
     pub fn thread_is_hidden(&self, col_idx: usize, thread_idx: usize) -> bool {
@@ -264,7 +278,14 @@ impl AppState {
         let Some(thread) = col.threads.get(thread_idx) else {
             return false;
         };
-        self.collection_is_hidden(col_idx) || thread.hidden
+        if self.collection_is_hidden(col_idx) || thread.hidden {
+            return true;
+        }
+        self.active_filter && !self.thread_has_live_session(thread.id)
+    }
+
+    fn thread_has_live_session(&self, thread_id: Uuid) -> bool {
+        self.active_sessions.iter().any(|s| s.thread_id == thread_id)
     }
 
     pub fn thread_is_visible(&self, col_idx: usize, thread_idx: usize) -> bool {
@@ -529,6 +550,11 @@ impl AppState {
     /// Get all launchable worktree sessions belonging to a given thread, excluding already-active tmux sessions.
     /// Mainline branch names are listed first (main, master, dev, develop), followed by the rest alphabetically.
     pub fn worktrees_for_thread(&self, thread_id: Uuid) -> Vec<&WorktreeSession> {
+        // Worktree rows are inactive by definition (they only exist while no
+        // session runs for them), so the active filter hides them all.
+        if self.active_filter {
+            return Vec::new();
+        }
         // worktree_sessions is pre-sorted at refresh time; filtering keeps order.
         self.worktree_sessions
             .iter()
@@ -815,6 +841,7 @@ impl AppState {
             worktree_sessions: Vec::new(),
             agent_sessions: Vec::new(),
             pi_statuses: Vec::new(),
+            active_filter: false,
         }
     }
 
@@ -841,6 +868,7 @@ impl AppState {
             worktree_sessions: Vec::new(),
             agent_sessions: Vec::new(),
             pi_statuses: Vec::new(),
+            active_filter: false,
         }
     }
 
@@ -951,6 +979,73 @@ mod tests {
         assert_eq!(state.show_all_hidden(), 2);
         assert!(!state.collections[0].hidden);
         assert!(!state.collections[0].threads[0].hidden);
+    }
+
+    #[test]
+    fn active_filter_hides_threads_without_sessions() {
+        let mut state = AppState::with_sample_data();
+        state.active_filter = true;
+        // No sessions at all: every thread and collection is hidden.
+        assert!(state.thread_is_hidden(0, 0));
+        assert!(state.collection_is_hidden(0));
+
+        // A live session for Work/Edge Device Pipeline reveals thread + collection.
+        state.refresh_sessions(&[("tws_work_edge-device-pipeline_main".into(), 0)]);
+        assert!(!state.thread_is_hidden(0, 0));
+        assert!(!state.collection_is_hidden(0));
+        // Sibling thread without a session stays hidden.
+        assert!(state.thread_is_hidden(0, 1));
+        // Other collection stays hidden.
+        assert!(state.collection_is_hidden(1));
+
+        // Toggling off restores everything.
+        state.active_filter = false;
+        assert!(!state.thread_is_hidden(0, 1));
+        assert!(!state.collection_is_hidden(1));
+    }
+
+    #[test]
+    fn active_filter_ignores_sessions_in_manually_hidden_threads() {
+        let mut state = AppState::with_sample_data();
+        state.refresh_sessions(&[("tws_work_edge-device-pipeline_main".into(), 0)]);
+        state.hide_thread(0, 0);
+        state.active_filter = true;
+        // The only live session sits in a manually hidden thread, so the
+        // collection has no visible activity and is filtered too.
+        assert!(state.collection_is_hidden(0));
+    }
+
+    #[test]
+    fn active_filter_hides_all_worktrees() {
+        let mut state = AppState::with_sample_data();
+        let thread_id = state.collections[0].threads[0].id;
+        state.refresh_worktree_sessions(vec![WorktreeSession {
+            tmux_session_name: "tws_work_edge-device-pipeline_feature-x".into(),
+            display_name: "feature-x".into(),
+            thread_id,
+            repo: std::path::PathBuf::from("/tmp/repo"),
+            path: std::path::PathBuf::from("/tmp/feature-x"),
+            branch: None,
+            head: None,
+            prunable: false,
+            is_main: false,
+            path_exists: true,
+            launchable: true,
+        }]);
+        assert_eq!(state.worktrees_for_thread(thread_id).len(), 1);
+        state.active_filter = true;
+        assert!(state.worktrees_for_thread(thread_id).is_empty());
+    }
+
+    #[test]
+    fn active_filter_never_hides_root_collection() {
+        let mut state = AppState::new();
+        state.ensure_general_thread();
+        state.active_filter = true;
+        let root_idx = state.find_root_collection_idx().unwrap();
+        assert!(!state.collection_is_hidden(root_idx));
+        // But the root thread itself is filtered without a session.
+        assert!(state.thread_is_hidden(root_idx, 0));
     }
 
     #[test]

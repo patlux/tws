@@ -132,15 +132,15 @@ impl App {
 
     pub(super) fn visible_tree_paths(&self) -> Vec<Vec<String>> {
         let mut paths = Vec::new();
-        for col in &self.state.collections {
-            if col.is_root || col.hidden {
+        for (col_idx, col) in self.state.collections.iter().enumerate() {
+            if col.is_root || self.state.collection_is_hidden(col_idx) {
                 continue;
             }
             let col_path = vec![col.id.to_string()];
             paths.push(col_path.clone());
             if self.tree_state.opened().contains(&col_path) {
-                for thread in &col.threads {
-                    if thread.hidden {
+                for (thread_idx, thread) in col.threads.iter().enumerate() {
+                    if self.state.thread_is_hidden(col_idx, thread_idx) {
                         continue;
                     }
                     let thread_path = vec![col.id.to_string(), thread.id.to_string()];
@@ -151,12 +151,12 @@ impl App {
                 }
             }
         }
-        for col in &self.state.collections {
+        for (col_idx, col) in self.state.collections.iter().enumerate() {
             if !col.is_root {
                 continue;
             }
-            for thread in &col.threads {
-                if thread.hidden {
+            for (thread_idx, thread) in col.threads.iter().enumerate() {
+                if self.state.thread_is_hidden(col_idx, thread_idx) {
                     continue;
                 }
                 let thread_path = vec![thread.id.to_string()];
@@ -223,6 +223,15 @@ impl App {
         Vec::new()
     }
 
+    /// Select a tree path and open all its ancestor nodes so the
+    /// selection is actually visible (expanded collection/thread/session).
+    pub(super) fn select_tree_path_expanded(&mut self, path: Vec<String>) {
+        for i in 1..path.len() {
+            self.tree_state.open(path[..i].to_vec());
+        }
+        self.tree_state.select(path);
+    }
+
     pub(super) fn ensure_visible_tree_selection(&mut self) {
         if self.tree_state.selected().is_empty() {
             return;
@@ -274,6 +283,7 @@ impl App {
             Action::ClearMarks => self.clear_marked_sessions(),
             Action::Hide => self.hide_selected(),
             Action::ShowHidden => self.show_all_hidden(),
+            Action::ToggleActiveFilter => self.toggle_active_filter(),
             Action::Help => self.mode = Mode::Help { scroll: 0 },
             Action::Finder => {
                 if self.state.active_sessions.is_empty() && self.state.worktree_sessions.is_empty() {
@@ -302,7 +312,7 @@ impl App {
             let name = session.tmux_session_name.clone();
             self.attach_to_session(&name, terminal)?;
             if let Some(path) = self.state.session_tree_path(&name) {
-                self.tree_state.select(path);
+                self.select_tree_path_expanded(path);
             }
         }
         Ok(())
@@ -614,6 +624,17 @@ impl App {
         }
     }
 
+    pub(super) fn toggle_active_filter(&mut self) {
+        self.state.active_filter = !self.state.active_filter;
+        if self.state.active_filter {
+            self.ensure_visible_tree_selection();
+            self.set_flash("Active filter on");
+        } else {
+            self.set_flash("Active filter off");
+        }
+        self.sync_note_editor();
+    }
+
     pub(super) fn show_all_hidden(&mut self) {
         let restored = self.state.show_all_hidden();
         if restored == 0 {
@@ -852,7 +873,12 @@ impl App {
             })
             .collect();
 
-        let mut worktrees: Vec<_> = self.state.worktree_sessions.iter().collect();
+        // Worktree rows are inactive by definition — the active filter drops them.
+        let mut worktrees: Vec<_> = if self.state.active_filter {
+            Vec::new()
+        } else {
+            self.state.worktree_sessions.iter().collect()
+        };
         worktrees.sort_by(|a, b| a.display_name.cmp(&b.display_name));
         entries.extend(worktrees.into_iter().filter_map(|w| {
             if self.state.active_sessions.iter().any(|s| s.tmux_session_name == w.tmux_session_name) {
@@ -902,7 +928,7 @@ impl App {
                         let name = state.all_entries[idx].0.clone();
                         self.open_session_or_worktree(&name, terminal)?;
                         if let Some(path) = self.state.session_tree_path(&name) {
-                            self.tree_state.select(path);
+                            self.select_tree_path_expanded(path);
                         }
                     }
             }
@@ -992,7 +1018,7 @@ impl App {
                     self.do_refresh_sessions();
 
                     if let Some(path) = self.state.session_tree_path(&new_tmux_name) {
-                        self.tree_state.select(path);
+                        self.select_tree_path_expanded(path);
                     }
                     self.sync_note_editor();
                     self.set_flash(&format!("Session moved to {}", dest_display));
@@ -1511,10 +1537,10 @@ impl App {
     pub(super) fn toggle_expand_all(&mut self) {
         let mut all_paths: Vec<Vec<String>> = Vec::new();
 
-        for col in &self.state.collections {
+        for (col_idx, col) in self.state.collections.iter().enumerate() {
             if col.is_root {
-                for thread in &col.threads {
-                    if thread.hidden {
+                for (thread_idx, thread) in col.threads.iter().enumerate() {
+                    if self.state.thread_is_hidden(col_idx, thread_idx) {
                         continue;
                     }
                     if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
@@ -1530,12 +1556,12 @@ impl App {
                     }
                 }
             } else {
-                if col.hidden {
+                if self.state.collection_is_hidden(col_idx) {
                     continue;
                 }
                 all_paths.push(vec![col.id.to_string()]);
-                for thread in &col.threads {
-                    if thread.hidden {
+                for (thread_idx, thread) in col.threads.iter().enumerate() {
+                    if self.state.thread_is_hidden(col_idx, thread_idx) {
                         continue;
                     }
                     if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
