@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 
 use ansi_to_tui::IntoText;
 use ratatui::style::Color;
@@ -21,7 +22,7 @@ pub struct MarkdownRenderer {
 struct RenderCache {
     source: String,
     width: u16,
-    text: Text<'static>,
+    text: Rc<Text<'static>>,
 }
 
 impl MarkdownRenderer {
@@ -52,7 +53,8 @@ impl MarkdownRenderer {
     /// Render markdown to styled `Text`, using cache when possible.
     ///
     /// Re-renders only when the source text or target width changes.
-    pub fn render(&mut self, markdown: &str, width: u16) -> &Text<'static> {
+    /// Returns a cheap `Rc` clone — no per-frame deep copy of the text.
+    pub fn render(&mut self, markdown: &str, width: u16) -> Rc<Text<'static>> {
         let cache_valid = self
             .cache
             .as_ref()
@@ -69,11 +71,11 @@ impl MarkdownRenderer {
             self.cache = Some(RenderCache {
                 source: markdown.to_string(),
                 width,
-                text,
+                text: Rc::new(text),
             });
         }
 
-        &self.cache.as_ref().unwrap().text
+        Rc::clone(&self.cache.as_ref().unwrap().text)
     }
 
     /// Number of lines in the last rendered output. Returns 0 if nothing cached.

@@ -94,6 +94,7 @@ pub fn parse_status(data: &str) -> Option<PiStatus> {
 
 /// Load all status files from `dir`. Missing directory or unreadable/invalid
 /// files simply yield fewer results.
+#[cfg(test)]
 pub fn load_all(dir: &Path) -> Vec<PiStatus> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -121,16 +122,19 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Delete status files whose pane is no longer live and whose last update is
-/// older than `max_age`. Keeps recent "done" markers visible even after the
-/// Pi process exited, while preventing unbounded accumulation.
-pub fn prune(dir: &Path, live_pane_ids: &HashSet<String>, max_age: Duration) {
+/// Load all statuses and prune stale files in a single directory pass.
+///
+/// Files whose pane is no longer live and whose last update is older than
+/// `max_age` are deleted and excluded from the result. Recent "done" markers
+/// stay visible even after the Pi process exited.
+pub fn load_and_prune(dir: &Path, live_pane_ids: &HashSet<String>, max_age: Duration) -> Vec<PiStatus> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => return Vec::new(),
     };
     let now = now_ms();
     let max_age_ms = max_age.as_millis() as u64;
+    let mut result = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -142,13 +146,15 @@ pub fn prune(dir: &Path, live_pane_ids: &HashSet<String>, max_age: Duration) {
         let Some(status) = parse_status(&data) else {
             continue;
         };
-        if live_pane_ids.contains(&status.pane_id) {
+        if !live_pane_ids.contains(&status.pane_id)
+            && now.saturating_sub(status.updated_at_ms) > max_age_ms
+        {
+            let _ = std::fs::remove_file(&path);
             continue;
         }
-        if now.saturating_sub(status.updated_at_ms) > max_age_ms {
-            let _ = std::fs::remove_file(&path);
-        }
+        result.push(status);
     }
+    result
 }
 
 #[cfg(test)]
@@ -231,13 +237,15 @@ mod tests {
         std::fs::write(dir.join("stale.json"), status_json("%3", "tws_x", "done", 0)).unwrap();
 
         let live: HashSet<String> = ["%1".to_string()].into_iter().collect();
-        prune(&dir, &live, Duration::from_secs(60 * 60));
+        let loaded = load_and_prune(&dir, &live, Duration::from_secs(60 * 60));
 
-        let remaining = load_all(&dir);
-        let panes: Vec<&str> = remaining.iter().map(|s| s.pane_id.as_str()).collect();
+        let panes: Vec<&str> = loaded.iter().map(|s| s.pane_id.as_str()).collect();
         assert!(panes.contains(&"%1"));
         assert!(panes.contains(&"%2"));
         assert!(!panes.contains(&"%3"));
+        // The stale file is gone from disk too.
+        assert!(!dir.join("stale.json").exists());
+        assert!(dir.join("fresh.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

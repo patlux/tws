@@ -206,6 +206,12 @@ pub struct App {
     worktree_delete_rx: Receiver<WorktreeDeleteResult>,
     notification: Option<Notification>,
     animation_start: Instant,
+    /// Set whenever state changed in a way that requires a repaint.
+    /// The event loop only draws when this is set or an animation is active.
+    needs_redraw: bool,
+    /// Last known terminal width, updated on resize events. Used to size
+    /// the markdown render without a per-frame terminal size syscall.
+    last_width: u16,
 }
 
 /// How often to poll tmux for session changes (seconds).
@@ -315,6 +321,8 @@ impl App {
             worktree_delete_rx,
             notification: None,
             animation_start: Instant::now(),
+            needs_redraw: true,
+            last_width: crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80),
         }
     }
 
@@ -374,6 +382,7 @@ impl App {
 
     fn poll_worktree_delete_results(&mut self) {
         while let Ok(result) = self.worktree_delete_rx.try_recv() {
+            self.needs_redraw = true;
             let pending = self.pending_worktree_deletes.remove(&result.tmux_session_name);
             match result.result {
                 Ok(()) => {
@@ -494,41 +503,72 @@ impl App {
             // Hook-triggered agent scan (sub-250ms latency)
             if self.check_agent_trigger() {
                 self.do_agent_scan();
+                self.needs_redraw = true;
             }
 
             // Refresh agent preview if one is visible
             let selected = self.resolve_current_selected();
             self.refresh_preview(&selected);
 
-            self.draw(terminal)?;
-            if let Some(key) = event::poll_key(Duration::from_millis(250))? {
-                // Ctrl+C always quits
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.code == KeyCode::Char('c')
-                {
-                    self.running = false;
-                    continue;
+            // Dirty-flag rendering: skip the (expensive) full redraw unless
+            // something changed or an animation/transient message is on screen.
+            if self.needs_redraw || self.animation_active() {
+                self.draw(terminal)?;
+                self.needs_redraw = false;
+            }
+            match event::poll_event(Duration::from_millis(250))? {
+                Some(event::AppEvent::Resize(w)) => {
+                    self.last_width = w;
+                    self.needs_redraw = true;
                 }
+                Some(event::AppEvent::Key(key)) => {
+                    // Any keypress can change visible state.
+                    self.needs_redraw = true;
+                    // Ctrl+C always quits
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                    {
+                        self.running = false;
+                        continue;
+                    }
 
-                match &self.mode {
-                    Mode::Normal => {
-                        self.handle_normal_mode(key.code, key.modifiers, terminal)?;
-                    }
-                    Mode::Input { .. } => self.handle_input_key(key.code, key.modifiers, terminal)?,
-                    Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
-                    Mode::Error { .. } => self.handle_error_key(key.code, key.modifiers),
-                    Mode::Help => self.handle_help_key(key.code),
-                    Mode::Finder { .. } => {
-                        self.handle_finder_key(key.code, key.modifiers, terminal)?
-                    }
-                    Mode::ThreadPicker { .. } => {
-                        self.handle_thread_picker_key(key.code, key.modifiers)?
+                    match &self.mode {
+                        Mode::Normal => {
+                            self.handle_normal_mode(key.code, key.modifiers, terminal)?;
+                        }
+                        Mode::Input { .. } => self.handle_input_key(key.code, key.modifiers, terminal)?,
+                        Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
+                        Mode::Error { .. } => self.handle_error_key(key.code, key.modifiers),
+                        Mode::Help => self.handle_help_key(key.code),
+                        Mode::Finder { .. } => {
+                            self.handle_finder_key(key.code, key.modifiers, terminal)?
+                        }
+                        Mode::ThreadPicker { .. } => {
+                            self.handle_thread_picker_key(key.code, key.modifiers)?
+                        }
                     }
                 }
+                None => {}
             }
         }
         self.save_ui_state();
         Ok(())
+    }
+
+    /// True while something on screen animates or a transient message is
+    /// visible — forces tick-rate redraws for spinners, flash and notifications.
+    fn animation_active(&self) -> bool {
+        if !self.pending_worktree_deletes.is_empty() {
+            return true;
+        }
+        if self.flash.is_some() || self.notification.is_some() {
+            return true;
+        }
+        // Pi spinner: only spins while some Pi agent is actively working.
+        self.state
+            .pi_statuses
+            .iter()
+            .any(|s| s.work_state == pi_status::PiWorkState::Working)
     }
 
     fn draw(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
@@ -630,9 +670,10 @@ impl App {
         let editor_has_target = self.note_editor.target_key.is_some();
 
         let rendered_note = if show_sidebar && !editor_is_empty {
-            let (tw, _) = crossterm::terminal::size().unwrap_or((80, 24));
-            let render_width = (tw * 2 / 5).saturating_sub(2);
-            Some(self.md_renderer.render(&self.note_editor.content, render_width).clone())
+            // Cheap Rc clone of the cached render — no per-frame deep copy,
+            // no terminal-size syscall (width tracked via resize events).
+            let render_width = (self.last_width * 2 / 5).saturating_sub(2);
+            Some(self.md_renderer.render(&self.note_editor.content, render_width))
         } else {
             None
         };
@@ -690,7 +731,7 @@ impl App {
                 let deleting_labels = self.worktree_delete_progress_labels();
                 let deleting_label = |session_name: &str| deleting_labels.get(session_name).cloned();
                 let deleting_icon = self.worktree_spinner_frame();
-                let marked_sessions = self.marked_sessions.clone();
+                let marked_sessions = &self.marked_sessions;
                 let is_marked = |session_name: &str| marked_sessions.contains(session_name);
                 let pi_spinner = self.pi_spinner_frame();
                 let items = tree_view::build_tree_items(&self.state, &self.theme, &deleting_label, pi_spinner);
@@ -722,8 +763,12 @@ impl App {
                         self.theme.highlight
                     };
 
-                    let tree = Tree::new(&items)
-                        .expect("collection IDs are unique")
+                    let Ok(tree) = Tree::new(&items) else {
+                        // Duplicate identifiers (should never happen) — skip the
+                        // tree this frame instead of panicking mid-render.
+                        return;
+                    };
+                    let tree = tree
                         .block(block)
                         .highlight_style(tree_highlight)
                         .highlight_symbol("  ")
@@ -771,7 +816,7 @@ impl App {
                     notes_sidebar::render(
                         frame,
                         &notes_sidebar::SidebarState {
-                            rendered: rendered_note.as_ref(),
+                            rendered: rendered_note.as_deref(),
                             scroll_offset: editor_scroll,
                             is_empty: editor_is_empty,
                             title: &title,
@@ -1978,6 +2023,7 @@ impl App {
                             // background shows through, keeping the agent's real colors.
                             crate::core::markdown::clear_reset_backgrounds(&mut text);
                             self.preview_content = Some(text);
+                            self.needs_redraw = true;
                         }
                     }
                     self.preview_pane_id = Some(pane_id);
@@ -1985,6 +2031,9 @@ impl App {
                 }
             }
         } else {
+            if self.preview_content.is_some() {
+                self.needs_redraw = true;
+            }
             self.preview_content = None;
             self.preview_pane_id = None;
         }
@@ -2480,6 +2529,7 @@ impl App {
         self.prune_marked_sessions();
         self.last_refresh = Instant::now();
         self.do_agent_scan();
+        self.needs_redraw = true;
     }
 
     fn refresh_worktree_sessions(&mut self) {
@@ -2664,8 +2714,7 @@ impl App {
             .iter()
             .map(|a| a.pane_id.clone())
             .collect();
-        pi_status::prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
-        self.state.pi_statuses = pi_status::load_all(&status_dir);
+        self.state.pi_statuses = pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
 
         let path = persistence::config_dir().join("agent.trigger");
         self.last_agent_trigger_mtime = std::fs::metadata(&path)
