@@ -238,7 +238,9 @@ enum Mode {
     Error {
         message: String,
     },
-    Help,
+    Help {
+        scroll: u16,
+    },
     Finder {
         state: FinderState,
     },
@@ -674,7 +676,7 @@ impl App {
                         Mode::Input { .. } => self.handle_input_key(key.code, key.modifiers, terminal)?,
                         Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
                         Mode::Error { .. } => self.handle_error_key(key.code, key.modifiers),
-                        Mode::Help => self.handle_help_key(key.code),
+                        Mode::Help { .. } => self.handle_help_key(key.code),
                         Mode::Finder { .. } => {
                             self.handle_finder_key(key.code, key.modifiers, terminal)?
                         }

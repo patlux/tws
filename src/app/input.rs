@@ -14,7 +14,7 @@ impl App {
         // Global normal-mode actions that should work from tree, notes, and agents view.
         let normal_action = self.keymap.resolve(KeyMode::Normal, code, modifiers);
         if normal_action == Some(Action::Help) {
-            self.mode = Mode::Help;
+            self.mode = Mode::Help { scroll: 0 };
             return Ok(());
         }
         if normal_action == Some(Action::ToggleView) {
@@ -274,7 +274,7 @@ impl App {
             Action::ClearMarks => self.clear_marked_sessions(),
             Action::Hide => self.hide_selected(),
             Action::ShowHidden => self.show_all_hidden(),
-            Action::Help => self.mode = Mode::Help,
+            Action::Help => self.mode = Mode::Help { scroll: 0 },
             Action::Finder => {
                 if self.state.active_sessions.is_empty() && self.state.worktree_sessions.is_empty() {
                     self.set_flash("No sessions or worktrees");
@@ -508,8 +508,22 @@ impl App {
     }
 
     pub(super) fn handle_help_key(&mut self, code: KeyCode) {
-        if matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
-            self.mode = Mode::Normal;
+        match code {
+            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Help { scroll } = &mut self.mode {
+                    let max = help_modal::line_count(&self.theme, &self.keymap) as u16;
+                    *scroll = (*scroll + 1).min(max);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Help { scroll } = &mut self.mode {
+                    *scroll = scroll.saturating_sub(1);
+                }
+            }
+            _ => {}
         }
     }
 

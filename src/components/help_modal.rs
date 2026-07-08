@@ -9,22 +9,38 @@ use crate::theme::Theme;
 const WIDTH_PERCENT: u16 = 74;
 const POPUP_HEIGHT: u16 = 29;
 
-pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, keymap: &Keymap) {
+pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, keymap: &Keymap, scroll: u16) {
     let popup = centered_rect(WIDTH_PERCENT, popup_height(area), area);
     frame.render_widget(Clear, popup);
 
+    let lines = help_lines(theme, keymap);
+    let visible = popup.height.saturating_sub(4); // borders + padding
+    let max_scroll = (lines.len() as u16).saturating_sub(visible);
+    let scroll = scroll.min(max_scroll);
+
+    let title = if max_scroll > 0 {
+        " Help (j/k scroll) "
+    } else {
+        " Help "
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .style(theme.background)
-        .title(" Help ")
+        .title(title)
         .title_style(theme.modal_title)
         .border_style(theme.modal_border)
         .padding(Padding::new(2, 2, 1, 1));
 
-    let paragraph = Paragraph::new(help_lines(theme, keymap))
+    let paragraph = Paragraph::new(lines)
         .block(block)
+        .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, popup);
+}
+
+/// Number of help content lines — used by the app to clamp scrolling.
+pub fn line_count(theme: &Theme, keymap: &Keymap) -> usize {
+    help_lines(theme, keymap).len()
 }
 
 fn help_lines(theme: &Theme, keymap: &Keymap) -> Vec<Line<'static>> {

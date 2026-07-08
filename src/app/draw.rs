@@ -287,8 +287,8 @@ impl App {
             // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {
                 Mode::Normal => {}
-                Mode::Help => {
-                    help_modal::render(frame, area, &self.theme, &self.keymap);
+                Mode::Help { scroll } => {
+                    help_modal::render(frame, area, &self.theme, &self.keymap, *scroll);
                 }
                 Mode::Input { purpose, buffer } => {
                     let title = match purpose {
@@ -388,7 +388,7 @@ impl App {
             Mode::Input { .. } => StatusContext::Input,
             Mode::Confirm { .. } => StatusContext::Confirm,
             Mode::Error { .. } => StatusContext::Error,
-            Mode::Help => StatusContext::Help,
+            Mode::Help { .. } => StatusContext::Help,
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
             Mode::Normal => {
