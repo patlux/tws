@@ -61,7 +61,8 @@ impl Default for Palette {
             green: Color::Rgb(130, 180, 130),
             fg: Color::Rgb(212, 212, 212),
             dim: Color::Rgb(160, 160, 160),
-            muted: Color::Rgb(100, 100, 100),
+            // ≥ WCAG AA contrast (≈4.6:1) against bg (30,30,30)
+            muted: Color::Rgb(125, 125, 125),
             border: Color::Rgb(60, 60, 60),
             bg: Color::Rgb(30, 30, 30),
         }
@@ -158,7 +159,7 @@ mod tests {
         assert_eq!(p.green, Color::Rgb(130, 180, 130));
         assert_eq!(p.fg, Color::Rgb(212, 212, 212));
         assert_eq!(p.dim, Color::Rgb(160, 160, 160));
-        assert_eq!(p.muted, Color::Rgb(100, 100, 100));
+        assert_eq!(p.muted, Color::Rgb(125, 125, 125));
         assert_eq!(p.border, Color::Rgb(60, 60, 60));
         assert_eq!(p.bg, Color::Rgb(30, 30, 30));
     }

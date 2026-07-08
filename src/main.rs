@@ -15,7 +15,7 @@ use core::persistence;
 use core::state::AppState;
 
 #[derive(Parser)]
-#[command(name = "tws", about = "tmux workspace manager")]
+#[command(name = "tws", about = "tmux workspace manager", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -30,6 +30,17 @@ enum Command {
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
 
+    if std::process::Command::new("tmux")
+        .arg("-V")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("tws: tmux not found on PATH — install tmux first");
+        std::process::exit(1);
+    }
+
     match cli.command {
         Some(Command::Import) => import::run(),
         None => run_tui(),
@@ -37,7 +48,15 @@ fn main() -> std::io::Result<()> {
 }
 
 fn run_tui() -> std::io::Result<()> {
-    let collections = persistence::load()?;
+    let collections = match persistence::load() {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            eprintln!("tws: state.json is corrupted: {}", e);
+            eprintln!("tws: fix or remove ~/.config/tws/state.json to start fresh");
+            std::process::exit(1);
+        }
+        Err(e) => return Err(e),
+    };
     let ui_state = persistence::load_ui();
     let state = AppState {
         collections,

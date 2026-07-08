@@ -1043,7 +1043,7 @@ impl App {
                             }
                         }
                     };
-                    confirm_modal::render(frame, &message, area, &self.theme);
+                    confirm_modal::render(frame, &message, !purpose.requires_explicit_yes(), area, &self.theme);
                 }
                 Mode::Error { message } => {
                     error_modal::render(frame, message, area, &self.theme);

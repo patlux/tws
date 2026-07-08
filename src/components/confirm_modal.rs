@@ -5,15 +5,16 @@ use ratatui::Frame;
 
 use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, message: &str, area: Rect, theme: &Theme) {
+pub fn render(frame: &mut Frame, message: &str, enter_confirms: bool, area: Rect, theme: &Theme) {
     let popup = centered_rect(50, 7, area);
     frame.render_widget(Clear, popup);
 
+    let confirm_hint = if enter_confirms { "y/Enter" } else { "y" };
     let text = vec![
         Line::from(message),
         Line::from(""),
         Line::from(vec![
-            Span::styled("y", theme.modal_title),
+            Span::styled(confirm_hint, theme.modal_title),
             Span::styled(" to confirm  ", theme.modal_muted),
             Span::styled("esc", theme.modal_title),
             Span::styled(" to cancel", theme.modal_muted),

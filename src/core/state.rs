@@ -534,13 +534,12 @@ impl AppState {
     /// Get all launchable worktree sessions belonging to a given thread, excluding already-active tmux sessions.
     /// Mainline branch names are listed first (main, master, dev, develop), followed by the rest alphabetically.
     pub fn worktrees_for_thread(&self, thread_id: Uuid) -> Vec<&WorktreeSession> {
-        let mut worktrees: Vec<&WorktreeSession> = self.worktree_sessions
+        // worktree_sessions is pre-sorted at refresh time; filtering keeps order.
+        self.worktree_sessions
             .iter()
             .filter(|w| w.thread_id == thread_id)
             .filter(|w| !self.active_sessions.iter().any(|s| s.tmux_session_name == w.tmux_session_name))
-            .collect();
-        worktrees.sort_by_key(|w| worktree_sort_key(w));
-        worktrees
+            .collect()
     }
 
     pub fn find_worktree_by_tmux_name(&self, session_name: &str) -> Option<&WorktreeSession> {
@@ -598,7 +597,10 @@ impl AppState {
         }
     }
 
-    pub fn refresh_worktree_sessions(&mut self, worktree_sessions: Vec<WorktreeSession>) {
+    pub fn refresh_worktree_sessions(&mut self, mut worktree_sessions: Vec<WorktreeSession>) {
+        // Sort once here instead of on every worktrees_for_thread call
+        // (which runs several times per frame).
+        worktree_sessions.sort_by_key(worktree_sort_key);
         self.worktree_sessions = worktree_sessions;
     }
 

@@ -7,7 +7,7 @@ use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::theme::Theme;
 
 const WIDTH_PERCENT: u16 = 74;
-const POPUP_HEIGHT: u16 = 25;
+const POPUP_HEIGHT: u16 = 29;
 
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, keymap: &Keymap) {
     let popup = centered_rect(WIDTH_PERCENT, popup_height(area), area);
@@ -41,6 +41,10 @@ fn help_lines(theme: &Theme, keymap: &Keymap) -> Vec<Line<'static>> {
         row(keymap.key_hint(KeyMode::Normal, Action::Enter), "new, attach, or launch", theme),
         row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::Add), keymap.key_hint(KeyMode::Normal, Action::AddCollection)), "add thread / collection", theme),
         row(format!("{} / {} / {}", keymap.key_hint(KeyMode::Normal, Action::Rename), keymap.key_hint(KeyMode::Normal, Action::Delete), keymap.key_hint(KeyMode::Normal, Action::KillSession)), "rename / delete / kill", theme),
+        row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::MarkSession), keymap.key_hint(KeyMode::Normal, Action::ClearMarks)), "mark session / clear marks", theme),
+        row(keymap.key_hint(KeyMode::Normal, Action::Move), "move session to thread", theme),
+        row(keymap.key_hint(KeyMode::Normal, Action::ToggleSelect), "toggle expand", theme),
+        row(keymap.key_hint(KeyMode::Normal, Action::ExpandAll), "expand / collapse all", theme),
         row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::Hide), keymap.key_hint(KeyMode::Normal, Action::ShowHidden)), "hide / show hidden", theme),
         blank(),
         section("Notes", theme),
