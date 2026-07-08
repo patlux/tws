@@ -17,7 +17,7 @@ use crate::core::markdown::MarkdownRenderer;
 use crate::core::notes::{NoteEditor, NoteStore};
 use crate::core::persistence;
 use crate::core::pi_status;
-use crate::core::model::{WorktreeSession, slugify};
+use crate::core::model::{AgentSession, WorktreeSession, slugify};
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::event;
 use crate::config::{self, StartDirConfig, WorktreeConfig};
@@ -77,6 +77,31 @@ struct WorktreeDeleteResult {
     tmux_session_name: String,
     name: String,
     result: Result<(), String>,
+}
+
+/// Payload of a background session refresh: live tmux sessions plus the raw
+/// worktree discoveries per thread (name-building happens on the main thread).
+struct SessionsPayload {
+    live: Vec<(String, i64)>,
+    discoveries: Vec<(uuid::Uuid, PathBuf, Vec<worktrees::DiscoveredWorktree>)>,
+}
+
+/// Captured pane content converted off-thread, tagged with its pane id.
+struct PreviewResult {
+    pane_id: String,
+    text: Text<'static>,
+}
+
+/// Result of a background refresh or agent-only scan.
+struct RefreshResult {
+    /// Epoch at request time; results from before a synchronous refresh
+    /// are stale and dropped.
+    epoch: u64,
+    /// `Some` for full refreshes, `None` for agent-only scans.
+    sessions: Option<SessionsPayload>,
+    agents: Vec<crate::core::model::AgentSession>,
+    pi_statuses: Vec<pi_status::PiStatus>,
+    trigger_mtime: Option<SystemTime>,
 }
 
 struct Notification {
@@ -204,6 +229,23 @@ pub struct App {
     pending_worktree_deletes: HashMap<String, PendingWorktreeDelete>,
     worktree_delete_tx: Sender<WorktreeDeleteResult>,
     worktree_delete_rx: Receiver<WorktreeDeleteResult>,
+    refresh_tx: Sender<RefreshResult>,
+    refresh_rx: Receiver<RefreshResult>,
+    preview_tx: Sender<PreviewResult>,
+    preview_rx: Receiver<PreviewResult>,
+    /// True while a background pane capture is running.
+    preview_in_flight: bool,
+    /// True while a background full refresh is running.
+    refresh_in_flight: bool,
+    /// True while a background agent-only scan is running.
+    scan_in_flight: bool,
+    /// Bumped by synchronous refreshes to invalidate in-flight async results.
+    refresh_epoch: u64,
+    /// Selection restored from UiState, applied after the first refresh lands
+    /// (session paths only resolve once active_sessions is populated).
+    pending_selection_restore: Option<Vec<String>>,
+    /// Debounce for hook-triggered agent scans.
+    last_trigger_scan: Instant,
     notification: Option<Notification>,
     animation_start: Instant,
     /// Set whenever state changed in a way that requires a repaint.
@@ -219,6 +261,9 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How often to re-capture the agent pane preview (seconds).
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Minimum spacing between hook-triggered agent scans.
+const TRIGGER_SCAN_DEBOUNCE: Duration = Duration::from_millis(500);
 
 const NOTIFICATION_DURATION: Duration = Duration::from_secs(4);
 const DELETE_SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
@@ -291,6 +336,8 @@ impl App {
         worktree_configs: Vec<WorktreeConfig>,
     ) -> Self {
         let (worktree_delete_tx, worktree_delete_rx) = mpsc::channel();
+        let (refresh_tx, refresh_rx) = mpsc::channel();
+        let (preview_tx, preview_rx) = mpsc::channel();
         Self {
             state,
             tree_state: TreeState::default(),
@@ -319,6 +366,18 @@ impl App {
             pending_worktree_deletes: HashMap::new(),
             worktree_delete_tx,
             worktree_delete_rx,
+            refresh_tx,
+            refresh_rx,
+            preview_tx,
+            preview_rx,
+            preview_in_flight: false,
+            refresh_in_flight: false,
+            scan_in_flight: false,
+            refresh_epoch: 0,
+            pending_selection_restore: None,
+            last_trigger_scan: Instant::now()
+                .checked_sub(TRIGGER_SCAN_DEBOUNCE)
+                .unwrap_or_else(Instant::now),
             notification: None,
             animation_start: Instant::now(),
             needs_redraw: true,
@@ -467,7 +526,7 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut Tui, ui_state: persistence::UiState) -> std::io::Result<()> {
-        // Stage pin restore before the initial scan so the first do_agent_scan picks it up.
+        // Stage pin restore before the initial scan so the first agent scan picks it up.
         self.pending_pin_restore = ui_state.pins;
 
         // Restore expansion state before the initial refresh so Git worktrees are
@@ -476,14 +535,16 @@ impl App {
             self.tree_state.open(path);
         }
 
-        // Initial session refresh after restoring open nodes: active tmux sessions
-        // are always refreshed, worktree discovery is scoped to expanded threads.
-        self.do_refresh_sessions();
+        // Stale-while-revalidate startup: draw the first frame from persisted
+        // state immediately and load sessions/worktrees/agents in the background.
+        self.request_refresh();
 
-        // Restore last selection
+        // Restore last selection now (collections/threads resolve without live
+        // sessions) and stage it for re-application once the first refresh
+        // lands, so session/agent selections survive the async load.
         if let Some(sel) = ui_state.selected {
-            self.tree_state.select(sel);
-            self.ensure_visible_tree_selection();
+            self.tree_state.select(sel.clone());
+            self.pending_selection_restore = Some(sel);
         }
         // Restore view mode and agents cursor
         if ui_state.agents_view_active {
@@ -494,21 +555,26 @@ impl App {
 
         while self.running {
             self.poll_worktree_delete_results();
+            self.poll_refresh_results();
 
-            // Periodic session refresh (includes agent scan)
-            if self.last_refresh.elapsed() >= REFRESH_INTERVAL {
-                self.do_refresh_sessions();
+            // Periodic session refresh (includes agent scan), off-thread.
+            if self.last_refresh.elapsed() >= REFRESH_INTERVAL && !self.refresh_in_flight {
+                self.request_refresh();
             }
 
-            // Hook-triggered agent scan (sub-250ms latency)
-            if self.check_agent_trigger() {
-                self.do_agent_scan();
-                self.needs_redraw = true;
+            // Hook-triggered agent scan (sub-250ms latency), debounced + off-thread.
+            if self.check_agent_trigger()
+                && !self.scan_in_flight
+                && !self.refresh_in_flight
+                && self.last_trigger_scan.elapsed() >= TRIGGER_SCAN_DEBOUNCE
+            {
+                self.request_agent_scan();
             }
 
             // Refresh agent preview if one is visible
             let selected = self.resolve_current_selected();
             self.refresh_preview(&selected);
+            self.poll_preview_results();
 
             // Dirty-flag rendering: skip the (expensive) full redraw unless
             // something changed or an animation/transient message is on screen.
@@ -524,6 +590,8 @@ impl App {
                 Some(event::AppEvent::Key(key)) => {
                     // Any keypress can change visible state.
                     self.needs_redraw = true;
+                    // User is navigating — don't yank the selection later.
+                    self.pending_selection_restore = None;
                     // Ctrl+C always quits
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
@@ -2008,7 +2076,9 @@ impl App {
         Ok(())
     }
 
-    /// Refresh the agent preview if an agent is selected and enough time has elapsed.
+    /// Refresh the agent preview if an agent is selected and enough time has
+    /// elapsed. Capture + ANSI parsing run on a background thread so a slow
+    /// tmux server can't stall the UI.
     fn refresh_preview(&mut self, selected: &SelectedItem) {
         if let SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) = selected {
             if let Some(agent) = self.state.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx) {
@@ -2016,18 +2086,21 @@ impl App {
                 let pane_changed = self.preview_pane_id.as_deref() != Some(&pane_id);
                 let needs_refresh = pane_changed
                     || self.last_preview_refresh.elapsed() >= PREVIEW_REFRESH_INTERVAL;
-                if needs_refresh {
-                    if let Some(raw) = tmux::capture_pane(&pane_id) {
-                        if let Ok(mut text) = raw.as_bytes().into_text() {
-                            // Same Reset punch-through as notes: remap so the app
-                            // background shows through, keeping the agent's real colors.
-                            crate::core::markdown::clear_reset_backgrounds(&mut text);
-                            self.preview_content = Some(text);
-                            self.needs_redraw = true;
-                        }
-                    }
-                    self.preview_pane_id = Some(pane_id);
+                if needs_refresh && !self.preview_in_flight {
+                    self.preview_in_flight = true;
+                    self.preview_pane_id = Some(pane_id.clone());
                     self.last_preview_refresh = Instant::now();
+                    let tx = self.preview_tx.clone();
+                    std::thread::spawn(move || {
+                        if let Some(raw) = tmux::capture_pane(&pane_id) {
+                            if let Ok(mut text) = raw.as_bytes().into_text() {
+                                // Same Reset punch-through as notes: remap so the app
+                                // background shows through, keeping the agent's real colors.
+                                crate::core::markdown::clear_reset_backgrounds(&mut text);
+                                let _ = tx.send(PreviewResult { pane_id, text });
+                            }
+                        }
+                    });
                 }
             }
         } else {
@@ -2036,6 +2109,17 @@ impl App {
             }
             self.preview_content = None;
             self.preview_pane_id = None;
+        }
+    }
+
+    fn poll_preview_results(&mut self) {
+        while let Ok(result) = self.preview_rx.try_recv() {
+            self.preview_in_flight = false;
+            // Drop captures for panes the user has already navigated away from.
+            if self.preview_pane_id.as_deref() == Some(&result.pane_id) {
+                self.preview_content = Some(result.text);
+                self.needs_redraw = true;
+            }
         }
     }
 
@@ -2522,7 +2606,11 @@ impl App {
         Ok(())
     }
 
+    /// Synchronous refresh — used right after user actions (kill, rename,
+    /// attach) where the very next frame must reflect the new tmux state.
+    /// Bumps the epoch so any in-flight background refresh gets discarded.
     fn do_refresh_sessions(&mut self) {
+        self.refresh_epoch += 1;
         self.refresh_worktree_sessions();
         let live = tmux::list_tws_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
@@ -2532,33 +2620,157 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Kick off a full refresh (tmux sessions + git worktrees + agent scan +
+    /// pi statuses) on a background thread. Results land in poll_refresh_results.
+    fn request_refresh(&mut self) {
+        self.refresh_in_flight = true;
+        self.last_refresh = Instant::now();
+        let epoch = self.refresh_epoch;
+        let tx = self.refresh_tx.clone();
+        let worktree_jobs = self.expanded_worktree_jobs();
+        let status_dir = persistence::config_dir().join("pi-status");
+        let trigger_path = persistence::config_dir().join("agent.trigger");
+        std::thread::spawn(move || {
+            let live = tmux::list_tws_sessions_with_timestamps();
+            let discoveries: Vec<(uuid::Uuid, PathBuf, Vec<worktrees::DiscoveredWorktree>)> =
+                worktree_jobs
+                    .into_iter()
+                    .map(|(thread_id, repo, options)| {
+                        let wts = worktrees::discover(&repo, options).unwrap_or_default();
+                        (thread_id, repo, wts)
+                    })
+                    .collect();
+            // Scan all live tws sessions (superset of the matched ones);
+            // apply_agent_scan filters down to active sessions.
+            let session_names: Vec<String> = live.iter().map(|(n, _)| n.clone()).collect();
+            let agents = agent_scan::scan_agents(&session_names);
+            let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
+            let pi_statuses = pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
+            let trigger_mtime = std::fs::metadata(&trigger_path).and_then(|m| m.modified()).ok();
+            let _ = tx.send(RefreshResult {
+                epoch,
+                sessions: Some(SessionsPayload { live, discoveries }),
+                agents,
+                pi_statuses,
+                trigger_mtime,
+            });
+        });
+    }
+
+    /// Kick off an agent-only scan on a background thread (hook-triggered).
+    fn request_agent_scan(&mut self) {
+        self.scan_in_flight = true;
+        self.last_trigger_scan = Instant::now();
+        let epoch = self.refresh_epoch;
+        let tx = self.refresh_tx.clone();
+        let session_names: Vec<String> = self
+            .state
+            .active_sessions
+            .iter()
+            .map(|s| s.tmux_session_name.clone())
+            .collect();
+        let status_dir = persistence::config_dir().join("pi-status");
+        let trigger_path = persistence::config_dir().join("agent.trigger");
+        std::thread::spawn(move || {
+            let agents = agent_scan::scan_agents(&session_names);
+            let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
+            let pi_statuses = pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
+            let trigger_mtime = std::fs::metadata(&trigger_path).and_then(|m| m.modified()).ok();
+            let _ = tx.send(RefreshResult {
+                epoch,
+                sessions: None,
+                agents,
+                pi_statuses,
+                trigger_mtime,
+            });
+        });
+    }
+
+    /// Apply background refresh/scan results on the main thread.
+    fn poll_refresh_results(&mut self) {
+        while let Ok(result) = self.refresh_rx.try_recv() {
+            if result.sessions.is_some() {
+                self.refresh_in_flight = false;
+            } else {
+                self.scan_in_flight = false;
+            }
+            // Stale: a synchronous refresh ran after this was requested.
+            if result.epoch != self.refresh_epoch {
+                continue;
+            }
+            if let Some(payload) = result.sessions {
+                self.apply_worktree_discoveries(payload.discoveries);
+                self.state.refresh_sessions(&payload.live);
+                self.prune_marked_sessions();
+            }
+            self.apply_agent_scan(result.agents, result.pi_statuses, result.trigger_mtime);
+            // Re-apply the persisted selection once real session data exists.
+            if let Some(sel) = self.pending_selection_restore.take() {
+                self.tree_state.select(sel);
+                self.ensure_visible_tree_selection();
+                self.sync_note_editor();
+            }
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Worktree discovery jobs for all expanded, configured threads.
+    fn expanded_worktree_jobs(&self) -> Vec<(uuid::Uuid, PathBuf, DiscoverOptions)> {
+        self.worktree_configs
+            .iter()
+            .filter_map(|cfg| {
+                let (col_idx, thread_idx) = self.find_thread_for_worktree_config(cfg)?;
+                if !self.is_worktree_thread_expanded(col_idx, thread_idx) {
+                    return None;
+                }
+                let repo = expand_home(&cfg.repo);
+                let options = DiscoverOptions {
+                    include_main: cfg.include_main(),
+                    include_detached: cfg.include_detached(),
+                    skip_prunable: cfg.skip_prunable(),
+                };
+                let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+                Some((thread_id, repo, options))
+            })
+            .collect()
+    }
+
+    /// Synchronous worktree refresh — used when the user expands/collapses
+    /// a thread and the next frame must show its worktrees.
     fn refresh_worktree_sessions(&mut self) {
-        if self.worktree_configs.is_empty() {
+        let jobs = self.expanded_worktree_jobs();
+        if jobs.is_empty() {
             self.state.refresh_worktree_sessions(Vec::new());
             return;
         }
+        let discoveries = jobs
+            .into_iter()
+            .map(|(thread_id, repo, options)| {
+                let wts = worktrees::discover(&repo, options).unwrap_or_default();
+                (thread_id, repo, wts)
+            })
+            .collect();
+        self.apply_worktree_discoveries(discoveries);
+    }
 
+    fn find_thread_indices_by_id(&self, thread_id: uuid::Uuid) -> Option<(usize, usize)> {
+        self.state.collections.iter().enumerate().find_map(|(ci, col)| {
+            col.threads.iter().position(|t| t.id == thread_id).map(|ti| (ci, ti))
+        })
+    }
+
+    fn apply_worktree_discoveries(
+        &mut self,
+        discoveries: Vec<(uuid::Uuid, PathBuf, Vec<worktrees::DiscoveredWorktree>)>,
+    ) {
         let mut sessions = Vec::new();
         let mut used_names = HashSet::new();
 
-        for cfg in &self.worktree_configs {
-            let Some((col_idx, thread_idx)) = self.find_thread_for_worktree_config(cfg) else {
+        for (thread_id, repo, worktrees) in discoveries {
+            // Threads may have been renamed/deleted while discovery ran.
+            let Some((col_idx, thread_idx)) = self.find_thread_indices_by_id(thread_id) else {
                 continue;
             };
-            if !self.is_worktree_thread_expanded(col_idx, thread_idx) {
-                continue;
-            }
-            let repo = expand_home(&cfg.repo);
-            let options = DiscoverOptions {
-                include_main: cfg.include_main(),
-                include_detached: cfg.include_detached(),
-                skip_prunable: cfg.skip_prunable(),
-            };
-            let Ok(worktrees) = worktrees::discover(&repo, options) else {
-                continue;
-            };
-
-            let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
             for wt in worktrees {
                 let mut label = slugify(&wt.label_source());
                 if label.is_empty() {
@@ -2645,10 +2857,44 @@ impl App {
         }
     }
 
+    /// Synchronous agent scan (used by do_refresh_sessions after user actions).
     fn do_agent_scan(&mut self) {
         if self.state.active_sessions.is_empty() {
             self.state.agent_sessions.clear();
             self.state.pi_statuses.clear();
+            return;
+        }
+
+        let session_names: Vec<String> = self
+            .state
+            .active_sessions
+            .iter()
+            .map(|s| s.tmux_session_name.clone())
+            .collect();
+        let agents = agent_scan::scan_agents(&session_names);
+
+        let status_dir = persistence::config_dir().join("pi-status");
+        let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
+        let pi_statuses = pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
+
+        let trigger_path = persistence::config_dir().join("agent.trigger");
+        let trigger_mtime = std::fs::metadata(&trigger_path).and_then(|m| m.modified()).ok();
+
+        self.apply_agent_scan(agents, pi_statuses, trigger_mtime);
+    }
+
+    /// Merge scanned agents into state, preserving renames/pins and applying
+    /// the one-shot pin restore. Shared by the sync and async scan paths.
+    fn apply_agent_scan(
+        &mut self,
+        scanned: Vec<AgentSession>,
+        pi_statuses: Vec<pi_status::PiStatus>,
+        trigger_mtime: Option<SystemTime>,
+    ) {
+        if self.state.active_sessions.is_empty() {
+            self.state.agent_sessions.clear();
+            self.state.pi_statuses.clear();
+            self.last_agent_trigger_mtime = trigger_mtime;
             return;
         }
 
@@ -2671,13 +2917,18 @@ impl App {
             })
             .collect();
 
-        let session_names: Vec<String> = self
+        // Async scans may cover a superset of sessions; keep only agents in
+        // sessions tws currently tracks.
+        let active: HashSet<&str> = self
             .state
             .active_sessions
             .iter()
-            .map(|s| s.tmux_session_name.clone())
+            .map(|s| s.tmux_session_name.as_str())
             .collect();
-        self.state.agent_sessions = agent_scan::scan_agents(&session_names);
+        self.state.agent_sessions = scanned
+            .into_iter()
+            .filter(|a| active.contains(a.tmux_session_name.as_str()))
+            .collect();
 
         for agent in &mut self.state.agent_sessions {
             if let Some(prev) = snapshot.get(&agent.pane_id) {
@@ -2705,21 +2956,8 @@ impl App {
             }
         }
 
-        // Load Pi work statuses written by the companion Pi extension and
-        // prune stale files for panes that are long gone.
-        let status_dir = persistence::config_dir().join("pi-status");
-        let live_panes: HashSet<String> = self
-            .state
-            .agent_sessions
-            .iter()
-            .map(|a| a.pane_id.clone())
-            .collect();
-        self.state.pi_statuses = pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
-
-        let path = persistence::config_dir().join("agent.trigger");
-        self.last_agent_trigger_mtime = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok();
+        self.state.pi_statuses = pi_statuses;
+        self.last_agent_trigger_mtime = trigger_mtime;
     }
 
     fn toggle_expand_all(&mut self) {

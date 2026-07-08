@@ -35,12 +35,41 @@ pub fn scan_agents(tws_sessions: &[String]) -> Vec<AgentSession> {
         return Vec::new();
     }
 
-    let children = match list_all_processes() {
+    // Only list direct children of the pane shells instead of walking the
+    // whole process table with `ps -e` (which reads argv of every process).
+    let pane_pids: Vec<u32> = panes.iter().map(|p| p.pane_pid).collect();
+    let children = match list_children_of(&pane_pids).or_else(list_all_processes) {
         Some(raw) => parse_processes(&raw),
         None => return Vec::new(),
     };
 
     match_agents(&panes, &children)
+}
+
+/// List direct children of the given parent PIDs via `pgrep -P` + a targeted
+/// `ps -p`. Returns `None` if pgrep is unavailable (caller falls back to `ps -e`).
+fn list_children_of(parent_pids: &[u32]) -> Option<String> {
+    let parents = parent_pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    // pgrep exits 1 with no output when nothing matches — not an error here.
+    let out = Command::new("pgrep").args(["-P", &parents]).output().ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let pids: Vec<&str> = stdout.split_whitespace().collect();
+    if pids.is_empty() {
+        return Some(String::new());
+    }
+    let output = Command::new("ps")
+        .args(["-ww", "-o", "pid=,ppid=,command=", "-p", &pids.join(",")])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        None
+    }
 }
 
 fn list_all_panes() -> Option<String> {
