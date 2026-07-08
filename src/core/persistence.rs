@@ -56,10 +56,14 @@ fn write_atomic(path: &std::path::Path, data: &str) -> io::Result<()> {
 }
 
 pub(crate) fn config_dir() -> PathBuf {
-    dirs::home_dir()
-        .expect("could not determine home directory")
-        .join(".config")
-        .join("tws")
+    // Respect XDG_CONFIG_HOME when set; fall back to ~/.config (the historic
+    // location on all platforms), then to a relative path if home is unknown.
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| PathBuf::from(".config"));
+    base.join("tws")
 }
 
 fn state_file() -> PathBuf {

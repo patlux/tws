@@ -12,9 +12,10 @@ pub struct NoteStore {
 
 impl NoteStore {
     /// Create a new NoteStore, ensuring the notes directory exists.
+    /// If the directory can't be created, note reads/writes degrade to no-ops.
     pub fn new() -> Self {
         let dir = persistence::config_dir().join("notes");
-        fs::create_dir_all(&dir).expect("could not create notes directory");
+        let _ = fs::create_dir_all(&dir);
         Self { dir }
     }
 
@@ -57,8 +58,23 @@ impl NoteStore {
     }
 
     pub fn note_path(&self, key: &str) -> PathBuf {
-        self.dir.join(format!("{}.md", key))
+        self.dir.join(format!("{}.md", sanitize_key(key)))
     }
+}
+
+/// Restrict note keys to a safe filename charset so keys derived from tmux
+/// session names can never escape the notes directory (e.g. via `../`).
+/// UUIDs and slugified tws session names pass through unchanged.
+fn sanitize_key(key: &str) -> String {
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Read-only note viewer. Holds loaded note content and scroll state
@@ -222,6 +238,30 @@ mod note_store_tests {
         store.set("key1", "first version");
         store.set("key1", "second version");
         assert_eq!(store.get("key1").unwrap(), "second version");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn note_path_neutralizes_traversal() {
+        let (store, dir) = temp_store();
+        let path = store.note_path("../../etc/passwd");
+        assert!(path.starts_with(&dir));
+        assert_eq!(path.file_name().unwrap(), "______etc_passwd.md");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn note_path_passes_through_safe_keys() {
+        let (store, dir) = temp_store();
+        let uuid = "00000000-0000-0000-0000-000000000001";
+        assert_eq!(
+            store.note_path(uuid).file_name().unwrap(),
+            format!("{}.md", uuid).as_str()
+        );
+        assert_eq!(
+            store.note_path("tws_work_proj").file_name().unwrap(),
+            "tws_work_proj.md"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }
