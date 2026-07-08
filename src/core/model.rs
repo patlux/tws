@@ -82,7 +82,6 @@ pub struct AgentSession {
     pub tmux_session_name: String,
     pub window_index: u32,
     pub pane_id: String,
-    pub pane_title: String,
     pub display_name: String,
     pub renamed: bool,
     /// Pin slot 0..=9 if this agent is pinned, None otherwise.

@@ -337,11 +337,10 @@ fn expand_home(path: &str) -> PathBuf {
     if path == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }
-    }
     PathBuf::from(path)
 }
 
@@ -509,11 +508,10 @@ impl App {
                     self.marked_sessions.remove(&result.tmux_session_name);
                     self.notes.remove(&result.tmux_session_name);
                     self.do_refresh_sessions();
-                    if let Some(pending) = pending {
-                        if !pending.parent_selection.is_empty() {
+                    if let Some(pending) = pending
+                        && !pending.parent_selection.is_empty() {
                             self.tree_state.select(pending.parent_selection);
                         }
-                    }
                     self.sync_note_editor();
                     self.set_notification(format!("Deleted worktree {}", result.name), false);
                 }
@@ -1451,8 +1449,8 @@ impl App {
         // If a P-triggered slot-assign is pending, the next keystroke either assigns
         // (digit), cancels silently (Esc), or cancels and falls through (any other key).
         if let Some(pending) = self.pin_assign_pending.take() {
-            if let KeyCode::Char(c) = code {
-                if c.is_ascii_digit() {
+            if let KeyCode::Char(c) = code
+                && c.is_ascii_digit() {
                     let slot: u8 = c.to_digit(10).unwrap() as u8;
                     let snapshot = agents.iter().find(|a| a.pane_id == pending);
                     let already_in_slot = snapshot
@@ -1463,15 +1461,13 @@ impl App {
                         format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name)
                     });
                     self.state.pin_agent_to(&pending, slot);
-                    if !already_in_slot {
-                        if let Some(p) = path {
+                    if !already_in_slot
+                        && let Some(p) = path {
                             self.set_flash(&format!("Pin {}: {}", slot, p));
                         }
-                    }
                     self.reanchor_agent_cursor(Some(pending));
                     return Ok(());
                 }
-            }
             if matches!(code, KeyCode::Esc) {
                 return Ok(());
             }
@@ -1534,8 +1530,8 @@ impl App {
             }
             _ => {
                 // Plain digit → jump cursor to that pinned slot (Enter still attaches)
-                if let KeyCode::Char(c) = code {
-                    if c.is_ascii_digit() {
+                if let KeyCode::Char(c) = code
+                    && c.is_ascii_digit() {
                         let slot: u8 = c.to_digit(10).unwrap() as u8;
                         if let Some(agent) = self.state.agent_by_pin_slot(slot) {
                             let target_id = agent.pane_id.clone();
@@ -1544,7 +1540,6 @@ impl App {
                             }
                         }
                     }
-                }
             }
         }
         Ok(())
@@ -1558,12 +1553,11 @@ impl App {
             self.agent_list_cursor = 0;
             return;
         }
-        if let Some(id) = anchor_pane_id {
-            if let Some(idx) = agents.iter().position(|a| a.pane_id == id) {
+        if let Some(id) = anchor_pane_id
+            && let Some(idx) = agents.iter().position(|a| a.pane_id == id) {
                 self.agent_list_cursor = idx;
                 return;
             }
-        }
         self.agent_list_cursor = self.agent_list_cursor.min(agents.len() - 1);
     }
 
@@ -1620,13 +1614,11 @@ impl App {
             Some(Action::Confirm) => {
                 // Multi-item destructive confirms only accept an explicit `y`,
                 // so a double-tapped Enter can't wipe a collection/thread.
-                if code == KeyCode::Enter {
-                    if let Mode::Confirm { purpose } = &self.mode {
-                        if purpose.requires_explicit_yes() {
+                if code == KeyCode::Enter
+                    && let Mode::Confirm { purpose } = &self.mode
+                        && purpose.requires_explicit_yes() {
                             return;
                         }
-                    }
-                }
                 self.execute_confirm();
             }
             Some(Action::Cancel) => {
@@ -2003,11 +1995,10 @@ impl App {
 
         match action {
             Some(Action::MoveDown) => {
-                if let Mode::Finder { state } = &mut self.mode {
-                    if !state.filtered.is_empty() {
+                if let Mode::Finder { state } = &mut self.mode
+                    && !state.filtered.is_empty() {
                         state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
                     }
-                }
             }
             Some(Action::MoveUp) => {
                 if let Mode::Finder { state } = &mut self.mode {
@@ -2019,15 +2010,14 @@ impl App {
             }
             Some(Action::Confirm) => {
                 let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
-                if let Mode::Finder { state } = old_mode {
-                    if let Some(&idx) = state.filtered.get(state.cursor) {
+                if let Mode::Finder { state } = old_mode
+                    && let Some(&idx) = state.filtered.get(state.cursor) {
                         let name = state.all_entries[idx].0.clone();
                         self.open_session_or_worktree(&name, terminal)?;
                         if let Some(path) = self.state.session_tree_path(&name) {
                             self.tree_state.select(path);
                         }
                     }
-                }
             }
             Some(Action::Backspace) => {
                 if let Mode::Finder { state } = &mut self.mode {
@@ -2037,12 +2027,11 @@ impl App {
             }
             _ => {
                 // Character input for search query
-                if let KeyCode::Char(c) = code {
-                    if let Mode::Finder { state } = &mut self.mode {
+                if let KeyCode::Char(c) = code
+                    && let Mode::Finder { state } = &mut self.mode {
                         state.query.push(c);
                         state.update_filter();
                     }
-                }
             }
         }
         Ok(())
@@ -2058,11 +2047,10 @@ impl App {
         let nav_up = code == KeyCode::Up || (ctrl && code == KeyCode::Char('k'));
 
         if nav_down {
-            if let Mode::ThreadPicker { state, .. } = &mut self.mode {
-                if !state.filtered.is_empty() {
+            if let Mode::ThreadPicker { state, .. } = &mut self.mode
+                && !state.filtered.is_empty() {
                     state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
                 }
-            }
         } else if nav_up {
             if let Mode::ThreadPicker { state, .. } = &mut self.mode {
                 state.cursor = state.cursor.saturating_sub(1);
@@ -2095,8 +2083,8 @@ impl App {
 
     fn execute_move_session(&mut self) {
         let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
-        if let Mode::ThreadPicker { state, session_name, session_label } = old_mode {
-            if let Some(&idx) = state.filtered.get(state.cursor) {
+        if let Mode::ThreadPicker { state, session_name, session_label } = old_mode
+            && let Some(&idx) = state.filtered.get(state.cursor) {
                 let key = &state.all_entries[idx].0;
                 let dest_display = state.all_entries[idx].1.clone();
 
@@ -2123,7 +2111,6 @@ impl App {
                     self.set_flash(&format!("Session moved to {}", dest_display));
                 }
             }
-        }
     }
 
     fn handle_notes_key(
@@ -2162,14 +2149,13 @@ impl App {
                     self.last_preview_refresh = Instant::now();
                     let tx = self.preview_tx.clone();
                     std::thread::spawn(move || {
-                        if let Some(raw) = tmux::capture_pane(&pane_id) {
-                            if let Ok(mut text) = raw.as_bytes().into_text() {
+                        if let Some(raw) = tmux::capture_pane(&pane_id)
+                            && let Ok(mut text) = raw.as_bytes().into_text() {
                                 // Same Reset punch-through as notes: remap so the app
                                 // background shows through, keeping the agent's real colors.
                                 crate::core::markdown::clear_reset_backgrounds(&mut text);
                                 let _ = tx.send(PreviewResult { pane_id, text });
                             }
-                        }
                     });
                 }
             }
@@ -2850,14 +2836,13 @@ impl App {
                     Some(name) => name,
                     None => continue,
                 };
-                if used_names.contains(&session_name) {
-                    if let Some(head) = wt.head.as_deref() {
+                if used_names.contains(&session_name)
+                    && let Some(head) = wt.head.as_deref() {
                         label = format!("{}-{}", label, short_head(head));
                         if let Some(name) = self.state.make_session_name(col_idx, thread_idx, &label) {
                             session_name = name;
                         }
                     }
-                }
                 if !used_names.insert(session_name.clone()) {
                     continue;
                 }

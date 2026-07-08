@@ -63,6 +63,7 @@ pub fn build_tree_items<'a>(
 /// `tui-tree-widget` only has one global no-children symbol, so worktree icons are
 /// overlaid after the tree is rendered. This keeps worktree labels aligned with
 /// regular session labels while drawing `◌`/`✕` where `›`/`⌄` would appear.
+#[allow(clippy::too_many_arguments)]
 pub fn render_worktree_icons(
     frame: &mut Frame<'_>,
     app_state: &AppState,

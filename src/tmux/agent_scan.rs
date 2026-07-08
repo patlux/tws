@@ -199,11 +199,10 @@ fn identify_agent_script<'a>(tokens: impl Iterator<Item = &'a str>) -> Option<Ag
                 _ if c.contains("-pi-coding-agent-") => Some(AgentType::Pi),
                 _ => None,
             };
-            if let Some(agent) = matched {
-                if is_pkg_component(idx) || c.contains("-pi-coding-agent-") {
+            if let Some(agent) = matched
+                && (is_pkg_component(idx) || c.contains("-pi-coding-agent-")) {
                     return Some(agent);
                 }
-            }
         }
     }
     None
@@ -249,7 +248,6 @@ fn match_agents(
                         tmux_session_name: pane.session_name.clone(),
                         window_index: pane.window_index,
                         pane_id: pane.pane_id.clone(),
-                        pane_title: pane.pane_title.clone(),
                         display_name,
                         renamed: false,
                         pin_slot: None,

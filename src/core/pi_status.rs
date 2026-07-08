@@ -52,10 +52,8 @@ pub enum PiIndicator {
 pub struct PiStatus {
     pub pane_id: String,
     pub tmux_session_name: String,
-    pub session_name: Option<String>,
     pub work_state: PiWorkState,
     pub updated_at_ms: u64,
-    pub finished_at_ms: Option<u64>,
 }
 
 /// Wire format written by the Pi extension. Unknown fields are ignored.
@@ -66,13 +64,9 @@ struct RawStatus {
     #[serde(default)]
     tmux_session_name: String,
     #[serde(default)]
-    session_name: Option<String>,
-    #[serde(default)]
     state: String,
     #[serde(default)]
     updated_at_ms: u64,
-    #[serde(default)]
-    finished_at_ms: Option<u64>,
 }
 
 /// Parse a single status file's contents. Returns `None` for invalid JSON
@@ -85,10 +79,8 @@ pub fn parse_status(data: &str) -> Option<PiStatus> {
     Some(PiStatus {
         pane_id: raw.pane_id,
         tmux_session_name: raw.tmux_session_name,
-        session_name: raw.session_name,
         work_state: PiWorkState::parse(&raw.state),
         updated_at_ms: raw.updated_at_ms,
-        finished_at_ms: raw.finished_at_ms,
     })
 }
 
@@ -106,11 +98,10 @@ pub fn load_all(dir: &Path) -> Vec<PiStatus> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        if let Ok(data) = std::fs::read_to_string(&path) {
-            if let Some(status) = parse_status(&data) {
+        if let Ok(data) = std::fs::read_to_string(&path)
+            && let Some(status) = parse_status(&data) {
                 result.push(status);
             }
-        }
     }
     result
 }
@@ -183,16 +174,14 @@ mod tests {
         assert_eq!(s.tmux_session_name, "tws_work_proj");
         assert_eq!(s.work_state, PiWorkState::Working);
         assert_eq!(s.updated_at_ms, 1000);
-        assert_eq!(s.finished_at_ms, None);
     }
 
     #[test]
-    fn parse_done_with_finished_at() {
+    fn parse_done_ignores_extra_fields() {
         let json = r#"{"pane_id":"%3","tmux_session_name":"tws_a_b","state":"done","updated_at_ms":5,"finished_at_ms":5,"session_name":"Fix tests"}"#;
         let s = parse_status(json).unwrap();
         assert_eq!(s.work_state, PiWorkState::Done);
-        assert_eq!(s.finished_at_ms, Some(5));
-        assert_eq!(s.session_name.as_deref(), Some("Fix tests"));
+        assert_eq!(s.updated_at_ms, 5);
     }
 
     #[test]

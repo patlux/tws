@@ -314,8 +314,10 @@ mod tests {
 
     #[test]
     fn custom_palette_changes_derived_styles() {
-        let mut p = Palette::default();
-        p.accent = Color::Rgb(255, 0, 0);
+        let p = Palette {
+            accent: Color::Rgb(255, 0, 0),
+            ..Palette::default()
+        };
         let t = Theme::build(&p);
 
         // Thread should use the new accent
@@ -357,8 +359,10 @@ mod tests {
 
     #[test]
     fn note_stylesheet_uses_palette() {
-        let mut p = Palette::default();
-        p.accent = Color::Rgb(255, 0, 0);
+        let p = Palette {
+            accent: Color::Rgb(255, 0, 0),
+            ..Palette::default()
+        };
         let ss = NoteStyleSheet::new(&p);
         assert_eq!(
             ss.heading(1),

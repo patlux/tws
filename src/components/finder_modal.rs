@@ -9,6 +9,7 @@ use crate::theme::Theme;
 /// Maximum number of result rows visible at once.
 const MAX_VISIBLE: usize = 10;
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
     title: &str,
