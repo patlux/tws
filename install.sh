@@ -69,6 +69,26 @@ get_binary() {
     curl -fSL --progress-bar "$url" -o "$tmpdir/$archive" \
         || err "Download failed. Is there a release for $target?"
 
+    # Verify against the release's SHA256SUMS.txt when available.
+    local sums_url="https://github.com/$REPO/releases/download/${latest_tag}/SHA256SUMS.txt"
+    if curl -fsSL "$sums_url" -o "$tmpdir/SHA256SUMS.txt" 2>/dev/null; then
+        local expected actual
+        expected="$(grep "  ${archive}\$" "$tmpdir/SHA256SUMS.txt" | awk '{print $1}')"
+        if [ -n "$expected" ]; then
+            if command -v sha256sum >/dev/null 2>&1; then
+                actual="$(sha256sum "$tmpdir/$archive" | awk '{print $1}')"
+            else
+                actual="$(shasum -a 256 "$tmpdir/$archive" | awk '{print $1}')"
+            fi
+            [ "$expected" = "$actual" ] || err "Checksum mismatch for $archive (expected $expected, got $actual)"
+            info "Checksum verified"
+        else
+            warn "No checksum entry for $archive in SHA256SUMS.txt; skipping verification"
+        fi
+    else
+        warn "SHA256SUMS.txt not found for $latest_tag; skipping checksum verification"
+    fi
+
     tar xzf "$tmpdir/$archive" -C "$tmpdir"
     cp "$tmpdir/tws-${latest_tag}-${target}/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
 }

@@ -1,6 +1,6 @@
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::model::Collection;
 
@@ -40,19 +40,31 @@ pub fn load_ui() -> UiState {
 }
 
 pub fn save_ui(ui: &UiState) -> io::Result<()> {
-    let dir = config_dir();
-    fs::create_dir_all(&dir)?;
+    ensure_config_dir()?;
     let data = serde_json::to_string_pretty(ui)?;
     write_atomic(&ui_state_file(), &data)?;
     Ok(())
 }
 
 /// Write via temp file + rename so a crash mid-write never corrupts the target.
-fn write_atomic(path: &std::path::Path, data: &str) -> io::Result<()> {
+fn write_atomic(path: &Path, data: &str) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, data)?;
     fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// Create the config dir if needed and keep it private (0700 on Unix) —
+/// notes and state can contain sensitive project details.
+fn ensure_config_dir() -> io::Result<PathBuf> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
+    Ok(dir)
 }
 
 pub(crate) fn config_dir() -> PathBuf {
@@ -82,8 +94,7 @@ pub fn load() -> io::Result<Vec<Collection>> {
 }
 
 pub fn save(collections: &[Collection]) -> io::Result<()> {
-    let dir = config_dir();
-    fs::create_dir_all(&dir)?;
+    ensure_config_dir()?;
     let data = serde_json::to_string_pretty(collections)?;
     write_atomic(&state_file(), &data)?;
     Ok(())
