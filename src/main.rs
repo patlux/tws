@@ -78,5 +78,8 @@ fn run_tui() -> std::io::Result<()> {
     let mut app = App::new(state, theme, note_stylesheet, keymap, start_dirs, worktrees);
     let result = app.run(&mut terminal, ui_state);
     tui::restore()?;
+    if let Some(warning) = &app.exit_warning {
+        eprintln!("tws: {}", warning);
+    }
     result
 }

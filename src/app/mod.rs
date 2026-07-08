@@ -253,6 +253,9 @@ pub struct App {
     pub state: AppState,
     pub tree_state: TreeState<String>,
     pub running: bool,
+    /// Warning to print after the terminal is restored (raw mode swallows
+    /// eprintln), e.g. a failed UI-state save on exit.
+    pub exit_warning: Option<String>,
     mode: Mode,
     focus: Focus,
     notes: NoteStore,
@@ -406,6 +409,7 @@ impl App {
             state,
             tree_state: TreeState::default(),
             running: true,
+            exit_warning: None,
             mode: Mode::Normal,
             focus: Focus::Tree,
             notes: NoteStore::new(),
@@ -709,7 +713,7 @@ impl App {
         }
     }
 
-    fn save_ui_state(&self) {
+    fn save_ui_state(&mut self) {
         let open_nodes: Vec<Vec<String>> = self.tree_state.opened().iter().cloned().collect();
         let selected = {
             let sel = self.tree_state.selected();
@@ -729,7 +733,7 @@ impl App {
             .collect();
         let ui = persistence::UiState { open_nodes, selected, agents_view_active, agent_list_cursor, pins };
         if let Err(e) = persistence::save_ui(&ui) {
-            eprintln!("Failed to save UI state: {}", e);
+            self.exit_warning = Some(format!("Failed to save UI state: {}", e));
         }
     }
 }
