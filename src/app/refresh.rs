@@ -73,12 +73,12 @@ impl App {
         let trigger_path = persistence::config_dir().join("agent.trigger");
         std::thread::spawn(move || {
             let live = tmux::list_tws_sessions_with_timestamps();
-            let discoveries: Vec<(uuid::Uuid, PathBuf, Vec<worktrees::DiscoveredWorktree>)> =
+            let discoveries: Vec<(uuid::Uuid, PathBuf, DiscoverOptions, Vec<worktrees::DiscoveredWorktree>)> =
                 worktree_jobs
                     .into_iter()
                     .map(|(thread_id, repo, options)| {
                         let wts = worktrees::discover(&repo, options).unwrap_or_default();
-                        (thread_id, repo, wts)
+                        (thread_id, repo, options, wts)
                     })
                     .collect();
             // Scan all live tws sessions (superset of the matched ones);
@@ -177,7 +177,8 @@ impl App {
     }
 
     /// Synchronous worktree refresh — used when the user expands/collapses
-    /// a thread and the next frame must show its worktrees.
+    /// a thread and the next frame must show its worktrees. Serves cached
+    /// discoveries when fresh enough so keypresses don't shell out to git.
     pub(super) fn refresh_worktree_sessions(&mut self) {
         let jobs = self.expanded_worktree_jobs();
         if jobs.is_empty() {
@@ -187,8 +188,15 @@ impl App {
         let discoveries = jobs
             .into_iter()
             .map(|(thread_id, repo, options)| {
-                let wts = worktrees::discover(&repo, options).unwrap_or_default();
-                (thread_id, repo, wts)
+                let cached = self
+                    .worktree_cache
+                    .get(&(repo.clone(), options))
+                    .filter(|(at, _)| at.elapsed() < WORKTREE_CACHE_TTL)
+                    .map(|(_, wts)| wts.clone());
+                let wts = cached.unwrap_or_else(|| {
+                    worktrees::discover(&repo, options).unwrap_or_default()
+                });
+                (thread_id, repo, options, wts)
             })
             .collect();
         self.apply_worktree_discoveries(discoveries);
@@ -202,12 +210,14 @@ impl App {
 
     pub(super) fn apply_worktree_discoveries(
         &mut self,
-        discoveries: Vec<(uuid::Uuid, PathBuf, Vec<worktrees::DiscoveredWorktree>)>,
+        discoveries: Vec<(uuid::Uuid, PathBuf, DiscoverOptions, Vec<worktrees::DiscoveredWorktree>)>,
     ) {
         let mut sessions = Vec::new();
         let mut used_names = HashSet::new();
 
-        for (thread_id, repo, worktrees) in discoveries {
+        for (thread_id, repo, options, worktrees) in discoveries {
+            self.worktree_cache
+                .insert((repo.clone(), options), (Instant::now(), worktrees.clone()));
             // Threads may have been renamed/deleted while discovery ran.
             let Some((col_idx, thread_idx)) = self.find_thread_indices_by_id(thread_id) else {
                 continue;

@@ -31,7 +31,7 @@ impl DiscoveredWorktree {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DiscoverOptions {
     pub include_main: bool,
     pub include_detached: bool,

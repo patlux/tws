@@ -148,7 +148,7 @@ struct WorktreeDeleteResult {
 /// worktree discoveries per thread (name-building happens on the main thread).
 struct SessionsPayload {
     live: Vec<(String, i64)>,
-    discoveries: Vec<(uuid::Uuid, PathBuf, Vec<worktrees::DiscoveredWorktree>)>,
+    discoveries: Vec<(uuid::Uuid, PathBuf, DiscoverOptions, Vec<worktrees::DiscoveredWorktree>)>,
 }
 
 /// Captured pane content converted off-thread, tagged with its pane id.
@@ -297,6 +297,10 @@ pub struct App {
     marked_sessions: HashSet<String>,
     /// Worktree delete jobs currently running in background threads, keyed by tmux session name.
     pending_worktree_deletes: HashMap<String, PendingWorktreeDelete>,
+    /// Cached worktree discoveries per (repo, options) so expand/collapse
+    /// keypresses don't shell out to git. Refreshed by the periodic background
+    /// refresh, invalidated on worktree deletion.
+    worktree_cache: HashMap<(PathBuf, DiscoverOptions), (Instant, Vec<worktrees::DiscoveredWorktree>)>,
     worktree_delete_tx: Sender<WorktreeDeleteResult>,
     worktree_delete_rx: Receiver<WorktreeDeleteResult>,
     refresh_tx: Sender<RefreshResult>,
@@ -328,6 +332,10 @@ pub struct App {
 
 /// How often to poll tmux for session changes (seconds).
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long cached worktree discoveries stay valid for the synchronous
+/// (keypress-driven) refresh path.
+const WORKTREE_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// How often to re-capture the agent pane preview (seconds).
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -434,6 +442,7 @@ impl App {
             jump_to_top_pending: false,
             marked_sessions: HashSet::new(),
             pending_worktree_deletes: HashMap::new(),
+            worktree_cache: HashMap::new(),
             worktree_delete_tx,
             worktree_delete_rx,
             refresh_tx,
@@ -512,6 +521,8 @@ impl App {
     fn poll_worktree_delete_results(&mut self) {
         while let Ok(result) = self.worktree_delete_rx.try_recv() {
             self.needs_redraw = true;
+            // A worktree was (possibly) removed — cached discoveries are stale.
+            self.worktree_cache.clear();
             let pending = self.pending_worktree_deletes.remove(&result.tmux_session_name);
             match result.result {
                 Ok(()) => {
@@ -619,6 +630,7 @@ impl App {
         if ui_state.agents_view_active {
             self.view_mode = ViewMode::Agents;
         }
+        self.state.active_filter = ui_state.active_filter;
         self.agent_list_cursor = ui_state.agent_list_cursor;
         self.sync_note_editor();
 
@@ -733,7 +745,8 @@ impl App {
             .iter()
             .filter_map(|a| a.pin_slot.map(|s| (a.pane_id.clone(), s)))
             .collect();
-        let ui = persistence::UiState { open_nodes, selected, agents_view_active, agent_list_cursor, pins };
+        let active_filter = self.state.active_filter;
+        let ui = persistence::UiState { open_nodes, selected, agents_view_active, active_filter, agent_list_cursor, pins };
         if let Err(e) = persistence::save_ui(&ui) {
             self.exit_warning = Some(format!("Failed to save UI state: {}", e));
         }
