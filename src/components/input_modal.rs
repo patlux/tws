@@ -5,13 +5,21 @@ use ratatui::Frame;
 
 use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, title: &str, input: &str, area: Rect, theme: &Theme) {
+pub fn render(frame: &mut Frame, title: &str, input: &str, cursor: usize, area: Rect, theme: &Theme) {
     let popup = centered_rect(50, 7, area);
     frame.render_widget(Clear, popup);
 
+    // Split at the cursor (a char index) and render a block cursor between.
+    let byte_idx = input
+        .char_indices()
+        .nth(cursor)
+        .map(|(i, _)| i)
+        .unwrap_or(input.len());
+    let (before, after) = input.split_at(byte_idx);
     let display_text = Line::from(vec![
-        Span::raw(input),
+        Span::raw(before.to_string()),
         Span::styled("\u{2588}", theme.cursor),
+        Span::raw(after.to_string()),
     ]);
 
     let block = Block::bordered()

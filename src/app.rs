@@ -28,6 +28,67 @@ use crate::tmux::agent_scan;
 use crate::tmux::commands as tmux;
 use crate::tui::{self, Tui};
 
+/// Single-line edit buffer with cursor navigation for the input modal.
+#[derive(Default)]
+struct InputBuffer {
+    content: String,
+    /// Cursor position in chars (0..=len).
+    cursor: usize,
+}
+
+impl InputBuffer {
+    fn from(content: String) -> Self {
+        let cursor = content.chars().count();
+        Self { content, cursor }
+    }
+
+    fn byte_index(&self) -> usize {
+        self.content
+            .char_indices()
+            .nth(self.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.content.len())
+    }
+
+    fn insert(&mut self, c: char) {
+        let idx = self.byte_index();
+        self.content.insert(idx, c);
+        self.cursor += 1;
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.cursor -= 1;
+        let idx = self.byte_index();
+        self.content.remove(idx);
+    }
+
+    fn left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    fn right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.content.chars().count());
+    }
+
+    fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn end(&mut self) {
+        self.cursor = self.content.chars().count();
+    }
+
+    /// Ctrl+U: delete everything before the cursor.
+    fn kill_to_start(&mut self) {
+        let idx = self.byte_index();
+        self.content.drain(..idx);
+        self.cursor = 0;
+    }
+}
+
 /// What the input modal is being used for.
 enum InputPurpose {
     AddCollection,
@@ -165,7 +226,7 @@ enum Mode {
     Normal,
     Input {
         purpose: InputPurpose,
-        buffer: String,
+        buffer: InputBuffer,
     },
     Confirm {
         purpose: ConfirmPurpose,
@@ -938,7 +999,7 @@ impl App {
                         InputPurpose::RenameSession { .. } => "Rename Session",
                         InputPurpose::RenameAgent { .. } => "Rename Agent",
                     };
-                    input_modal::render(frame, title, buffer, area, &self.theme);
+                    input_modal::render(frame, title, &buffer.content, buffer.cursor, area, &self.theme);
                 }
                 Mode::Confirm { purpose } => {
                     let message = match purpose {
@@ -1331,7 +1392,7 @@ impl App {
             Action::AddCollection => {
                 self.mode = Mode::Input {
                     purpose: InputPurpose::AddCollection,
-                    buffer: String::new(),
+                    buffer: InputBuffer::default(),
                 };
             }
             Action::Rename => self.start_rename(),
@@ -1531,13 +1592,21 @@ impl App {
             }
             Some(Action::Backspace) => {
                 if let Mode::Input { buffer, .. } = &mut self.mode {
-                    buffer.pop();
+                    buffer.backspace();
                 }
             }
             _ => {
-                if let KeyCode::Char(c) = code {
-                    if let Mode::Input { buffer, .. } = &mut self.mode {
-                        buffer.push(c);
+                if let Mode::Input { buffer, .. } = &mut self.mode {
+                    match code {
+                        KeyCode::Left => buffer.left(),
+                        KeyCode::Right => buffer.right(),
+                        KeyCode::Home => buffer.home(),
+                        KeyCode::End => buffer.end(),
+                        KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => buffer.home(),
+                        KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => buffer.end(),
+                        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => buffer.kill_to_start(),
+                        KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => buffer.insert(c),
+                        _ => {}
                     }
                 }
             }
@@ -1598,7 +1667,7 @@ impl App {
         };
         self.mode = Mode::Input {
             purpose,
-            buffer: String::new(),
+            buffer: InputBuffer::default(),
         };
     }
 
@@ -1635,7 +1704,7 @@ impl App {
         };
         self.mode = Mode::Input {
             purpose,
-            buffer: current_name,
+            buffer: InputBuffer::from(current_name),
         };
     }
 
@@ -1718,7 +1787,8 @@ impl App {
             }
             SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
                 let Some(worktree) = self.worktree_for_active_session_selection(*col_idx, *thread_idx, *sess_idx) else {
-                    // Use 'x' to kill ordinary sessions, not 'd'.
+                    let hint = self.keymap.key_hint(KeyMode::Normal, Action::KillSession);
+                    self.set_flash(&format!("Use {} to kill sessions", hint));
                     return;
                 };
                 if worktree.is_main {
@@ -1844,7 +1914,7 @@ impl App {
             SelectedItem::Thread(col_idx, thread_idx) => {
                 self.mode = Mode::Input {
                     purpose: InputPurpose::NewSession { col_idx, thread_idx },
-                    buffer: String::new(),
+                    buffer: InputBuffer::default(),
                 };
             }
             SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
@@ -1884,7 +1954,7 @@ impl App {
                 let (col_idx, thread_idx) = self.state.ensure_general_thread();
                 self.mode = Mode::Input {
                     purpose: InputPurpose::NewSession { col_idx, thread_idx },
-                    buffer: String::new(),
+                    buffer: InputBuffer::default(),
                 };
             }
         }
@@ -2200,7 +2270,7 @@ impl App {
         // Take ownership of the mode to extract buffer and purpose
         let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
         if let Mode::Input { purpose, buffer } = old_mode {
-            let trimmed = buffer.trim().to_string();
+            let trimmed = buffer.content.trim().to_string();
             if trimmed.is_empty() {
                 return Ok(());
             }
@@ -3021,9 +3091,10 @@ impl App {
         }
     }
 
-    fn save_state(&self) {
+    fn save_state(&mut self) {
         if let Err(e) = persistence::save(&self.state.collections) {
-            eprintln!("Failed to save state: {}", e);
+            // eprintln! is invisible in raw-mode/alternate screen — surface it.
+            self.set_error(format!("Failed to save state: {}", e));
         }
     }
 
