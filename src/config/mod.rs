@@ -44,6 +44,9 @@ pub struct WorktreeConfig {
     pub include_main: Option<bool>,
     pub include_detached: Option<bool>,
     pub skip_prunable: Option<bool>,
+    /// Optional base directory for worktrees created via tws. Without it, new
+    /// worktrees are placed as siblings of the repo.
+    pub worktree_dir: Option<String>,
 }
 
 /// Outcome of resolving a start directory, distinguishing a thread-specific

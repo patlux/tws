@@ -275,6 +275,7 @@ impl App {
                     buffer: InputBuffer::default(),
                 };
             }
+            Action::AddWorktree => self.start_add_worktree(),
             Action::Rename => self.start_rename(),
             Action::Delete => self.start_delete(),
             Action::KillSession => self.start_kill_session(),
@@ -558,6 +559,77 @@ impl App {
             purpose,
             buffer: InputBuffer::default(),
         };
+    }
+
+    pub(super) fn start_add_worktree(&mut self) {
+        let selected = self.state.resolve_selection(self.tree_state.selected());
+        let (col_idx, thread_idx) = match selected {
+            SelectedItem::Thread(col_idx, thread_idx)
+            | SelectedItem::Session(col_idx, thread_idx, _)
+            | SelectedItem::Worktree(col_idx, thread_idx, _)
+            | SelectedItem::Agent(col_idx, thread_idx, _, _) => (col_idx, thread_idx),
+            SelectedItem::Collection(..) | SelectedItem::None => {
+                self.set_flash("Select a thread with a git repo");
+                return;
+            }
+        };
+        let Some((repo, worktree_dir)) = self.worktree_repo_for_thread(col_idx, thread_idx) else {
+            self.set_flash("No git repo for this thread");
+            return;
+        };
+        let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
+        self.mode = Mode::Input {
+            purpose: InputPurpose::NewWorktree { thread_id, repo, worktree_dir },
+            buffer: InputBuffer::default(),
+        };
+    }
+
+    /// Resolve the git repo (and optional worktree base dir) backing a thread,
+    /// matching the discovery logic: explicit `[[worktrees]]` config first,
+    /// then an auto-detected start-dir subdirectory that is a git repo.
+    pub(super) fn worktree_repo_for_thread(
+        &self,
+        col_idx: usize,
+        thread_idx: usize,
+    ) -> Option<(PathBuf, Option<PathBuf>)> {
+        let col = self.state.collections.get(col_idx)?;
+        let thread = col.threads.get(thread_idx)?;
+        let collection = (!col.is_root).then_some(col.name.as_str());
+        for cfg in self.worktree_configs.iter().rev() {
+            let cfg_collection = cfg.collection.as_deref();
+            if cfg_collection == collection && cfg.thread == thread.name {
+                let repo = expand_home(&cfg.repo);
+                let worktree_dir = cfg.worktree_dir.as_deref().map(expand_home);
+                return Some((repo, worktree_dir));
+            }
+        }
+        self.auto_worktree_repo(col_idx, thread_idx).map(|repo| (repo, None))
+    }
+
+    /// Select the freshly created worktree row for `thread_id` by its path,
+    /// expanding the thread so it is visible.
+    pub(super) fn select_worktree_by_path(&mut self, thread_id: uuid::Uuid, path: &std::path::Path) {
+        let Some((col_idx, thread_idx)) = self.find_thread_indices_by_id(thread_id) else {
+            return;
+        };
+        let col = &self.state.collections[col_idx];
+        let thread = &col.threads[thread_idx];
+        let thread_path = if col.is_root {
+            vec![thread.id.to_string()]
+        } else {
+            vec![col.id.to_string(), thread.id.to_string()]
+        };
+        self.tree_state.open(thread_path.clone());
+        if let Some(wt) = self
+            .state
+            .worktree_sessions
+            .iter()
+            .find(|w| w.thread_id == thread_id && w.path == path)
+        {
+            let mut sel = thread_path;
+            sel.push(wt.tmux_session_name.clone());
+            self.tree_state.select(sel);
+        }
     }
 
     pub(super) fn start_rename(&mut self) {
@@ -1227,6 +1299,30 @@ impl App {
                         }
                         self.set_flash("Session launched");
                     }
+                }
+                InputPurpose::NewWorktree { thread_id, repo, worktree_dir } => {
+                    let branch = trimmed;
+                    let path = worktrees::worktree_path(&repo, worktree_dir.as_deref(), &branch);
+                    if path.exists() {
+                        self.set_error(format!("Path already exists: {}", path.display()));
+                        return Ok(());
+                    }
+                    if self.pending_worktree_creates.contains_key(&path) {
+                        self.set_flash("Worktree create already running");
+                        return Ok(());
+                    }
+                    self.pending_worktree_creates.insert(path.clone(), branch.clone());
+                    self.set_flash("Creating worktree…");
+                    let tx = self.worktree_create_tx.clone();
+                    std::thread::spawn(move || {
+                        let result = worktrees::add(&repo, &path, &branch);
+                        let _ = tx.send(WorktreeCreateResult {
+                            thread_id,
+                            branch,
+                            path,
+                            result,
+                        });
+                    });
                 }
                 InputPurpose::RenameSession { col_idx, thread_idx, old_tmux_name } => {
                     if let Some(new_tmux_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {

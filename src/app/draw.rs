@@ -302,6 +302,7 @@ impl App {
                         InputPurpose::RenameCollection { .. } => "Rename Collection",
                         InputPurpose::RenameThread { .. } => "Rename Thread",
                         InputPurpose::NewSession { .. } => "Session Name",
+                        InputPurpose::NewWorktree { .. } => "New Worktree (branch)",
                         InputPurpose::RenameSession { .. } => "Rename Session",
                         InputPurpose::RenameAgent { .. } => "Rename Agent",
                     };

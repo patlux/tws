@@ -100,6 +100,7 @@ enum InputPurpose {
     RenameCollection { idx: usize },
     RenameThread { col_idx: usize, thread_idx: usize },
     NewSession { col_idx: usize, thread_idx: usize },
+    NewWorktree { thread_id: uuid::Uuid, repo: PathBuf, worktree_dir: Option<PathBuf> },
     RenameSession {
         col_idx: usize,
         thread_idx: usize,
@@ -141,6 +142,13 @@ struct PendingWorktreeDelete {
 struct WorktreeDeleteResult {
     tmux_session_name: String,
     name: String,
+    result: Result<(), String>,
+}
+
+struct WorktreeCreateResult {
+    thread_id: uuid::Uuid,
+    branch: String,
+    path: PathBuf,
     result: Result<(), String>,
 }
 
@@ -297,12 +305,16 @@ pub struct App {
     marked_sessions: HashSet<String>,
     /// Worktree delete jobs currently running in background threads, keyed by tmux session name.
     pending_worktree_deletes: HashMap<String, PendingWorktreeDelete>,
+    /// Worktree create jobs currently running in background threads, keyed by target path.
+    pending_worktree_creates: HashMap<PathBuf, String>,
     /// Cached worktree discoveries per (repo, options) so expand/collapse
     /// keypresses don't shell out to git. Refreshed by the periodic background
     /// refresh, invalidated on worktree deletion.
     worktree_cache: HashMap<(PathBuf, DiscoverOptions), (Instant, Vec<worktrees::DiscoveredWorktree>)>,
     worktree_delete_tx: Sender<WorktreeDeleteResult>,
     worktree_delete_rx: Receiver<WorktreeDeleteResult>,
+    worktree_create_tx: Sender<WorktreeCreateResult>,
+    worktree_create_rx: Receiver<WorktreeCreateResult>,
     refresh_tx: Sender<RefreshResult>,
     refresh_rx: Receiver<RefreshResult>,
     preview_tx: Sender<PreviewResult>,
@@ -413,6 +425,7 @@ impl App {
         worktree_configs: Vec<WorktreeConfig>,
     ) -> Self {
         let (worktree_delete_tx, worktree_delete_rx) = mpsc::channel();
+        let (worktree_create_tx, worktree_create_rx) = mpsc::channel();
         let (refresh_tx, refresh_rx) = mpsc::channel();
         let (preview_tx, preview_rx) = mpsc::channel();
         Self {
@@ -442,9 +455,12 @@ impl App {
             jump_to_top_pending: false,
             marked_sessions: HashSet::new(),
             pending_worktree_deletes: HashMap::new(),
+            pending_worktree_creates: HashMap::new(),
             worktree_cache: HashMap::new(),
             worktree_delete_tx,
             worktree_delete_rx,
+            worktree_create_tx,
+            worktree_create_rx,
             refresh_tx,
             refresh_rx,
             preview_tx,
@@ -544,6 +560,26 @@ impl App {
         }
     }
 
+    fn poll_worktree_create_results(&mut self) {
+        while let Ok(result) = self.worktree_create_rx.try_recv() {
+            self.needs_redraw = true;
+            self.pending_worktree_creates.remove(&result.path);
+            match result.result {
+                Ok(()) => {
+                    // A worktree was created — cached discoveries are stale.
+                    self.worktree_cache.clear();
+                    self.refresh_worktree_sessions();
+                    self.select_worktree_by_path(result.thread_id, &result.path);
+                    self.sync_note_editor();
+                    self.set_notification(format!("Created worktree {}", result.branch), false);
+                }
+                Err(err) => {
+                    self.set_notification(format!("Create failed: {}", err), true);
+                }
+            }
+        }
+    }
+
     fn prune_marked_sessions(&mut self) {
         let live: HashSet<String> = self
             .state
@@ -636,6 +672,7 @@ impl App {
 
         while self.running {
             self.poll_worktree_delete_results();
+            self.poll_worktree_create_results();
             self.poll_refresh_results();
 
             // Periodic session refresh (includes agent scan), off-thread.
@@ -707,7 +744,7 @@ impl App {
     /// True while something on screen animates or a transient message is
     /// visible — forces tick-rate redraws for spinners, flash and notifications.
     fn animation_active(&self) -> bool {
-        if !self.pending_worktree_deletes.is_empty() {
+        if !self.pending_worktree_deletes.is_empty() || !self.pending_worktree_creates.is_empty() {
             return true;
         }
         if self.flash.is_some() || self.notification.is_some() {

@@ -56,6 +56,7 @@ fn help_lines(theme: &Theme, keymap: &Keymap) -> Vec<Line<'static>> {
         row("gg / G", "jump top / bottom", theme),
         row(keymap.key_hint(KeyMode::Normal, Action::Enter), "new, attach, or launch", theme),
         row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::Add), keymap.key_hint(KeyMode::Normal, Action::AddCollection)), "add thread / collection", theme),
+        row(keymap.key_hint(KeyMode::Normal, Action::AddWorktree), "new git worktree", theme),
         row(format!("{} / {} / {}", keymap.key_hint(KeyMode::Normal, Action::Rename), keymap.key_hint(KeyMode::Normal, Action::Delete), keymap.key_hint(KeyMode::Normal, Action::KillSession)), "rename / delete / kill", theme),
         row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::MarkSession), keymap.key_hint(KeyMode::Normal, Action::ClearMarks)), "mark session / clear marks", theme),
         row(keymap.key_hint(KeyMode::Normal, Action::Move), "move session to thread", theme),

@@ -12,6 +12,7 @@ pub enum Action {
     Enter,
     Add,
     AddCollection,
+    AddWorktree,
     Rename,
     Delete,
     KillSession,
@@ -127,6 +128,7 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "enter" => Ok(Action::Enter),
         "add" => Ok(Action::Add),
         "add_collection" => Ok(Action::AddCollection),
+        "add_worktree" => Ok(Action::AddWorktree),
         "rename" => Ok(Action::Rename),
         "delete" => Ok(Action::Delete),
         "kill_session" => Ok(Action::KillSession),
@@ -225,6 +227,7 @@ impl Keymap {
         bind!(M::Normal, KeyCode::Esc,       KeyModifiers::NONE,  A::Deselect);
         bind!(M::Normal, KeyCode::Char('a'), KeyModifiers::NONE,  A::Add);
         bind!(M::Normal, KeyCode::Char('A'), KeyModifiers::SHIFT, A::AddCollection);
+        bind!(M::Normal, KeyCode::Char('w'), KeyModifiers::NONE,  A::AddWorktree);
         bind!(M::Normal, KeyCode::Char('r'), KeyModifiers::NONE,  A::Rename);
         bind!(M::Normal, KeyCode::Char('d'), KeyModifiers::NONE,  A::Delete);
         bind!(M::Normal, KeyCode::Char('x'), KeyModifiers::NONE,  A::KillSession);
@@ -413,6 +416,7 @@ mod tests {
         assert_eq!(parse_action("quit").unwrap(), Action::Quit);
         assert_eq!(parse_action("move_down").unwrap(), Action::MoveDown);
         assert_eq!(parse_action("add_collection").unwrap(), Action::AddCollection);
+        assert_eq!(parse_action("add_worktree").unwrap(), Action::AddWorktree);
         assert_eq!(parse_action("kill_session").unwrap(), Action::KillSession);
         assert_eq!(parse_action("toggle_view").unwrap(), Action::ToggleView);
         assert_eq!(parse_action("help").unwrap(), Action::Help);
@@ -440,6 +444,7 @@ mod tests {
     fn default_keymap_normal_quit() {
         let km = Keymap::default_bindings();
         assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('q'), KeyModifiers::NONE), Some(Action::Quit));
+        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('w'), KeyModifiers::NONE), Some(Action::AddWorktree));
     }
 
     #[test]

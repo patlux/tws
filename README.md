@@ -94,6 +94,20 @@ When `skip_prunable = false`, prunable or missing worktrees are shown with a `�
 
 Threads that resolve to an auto start-dir subdirectory (see [Start directories](#start-directories)) also get worktrees automatically when that subdirectory is a Git repository — no `[[worktrees]]` entry required. Expand the thread to discover them, using the default options (`include_main`, `include_detached`, `skip_prunable`). Add an explicit `[[worktrees]]` entry for the thread to override these defaults; explicit entries take precedence over auto-detection.
 
+#### Creating worktrees
+
+Press `w` on a thread (or any of its sessions/worktrees) to create a new Git worktree. This works for both explicitly configured and auto-detected repos. Enter a branch name:
+
+- an existing local branch is checked out,
+- a branch that only exists on `origin` is checked out as a new tracking branch,
+- otherwise a fresh branch is created from the current `HEAD`.
+
+The worktree directory is placed as a sibling of the repo (`<repo>-<branch-slug>`) by default. Set `worktree_dir` on a `[[worktrees]]` entry to place worktrees under a shared base directory (`<worktree_dir>/<branch-slug>`) instead:
+
+```toml
+worktree_dir = "~/dev/worktrees"
+```
+
 ### Agent detection
 
 tws scans tmux panes periodically and identifies running AI coding agents by their child process names — no manual registration. Agents appear automatically under their session in the tree. The optional install-time hooks make tws refresh immediately when an agent starts or stops, instead of waiting for the next scan.

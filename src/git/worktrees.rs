@@ -62,6 +62,74 @@ pub fn discover(repo: &Path, options: DiscoverOptions) -> std::io::Result<Vec<Di
     Ok(parse_porcelain(&String::from_utf8_lossy(&output.stdout), options))
 }
 
+/// Compute the directory for a new worktree.
+///
+/// With `worktree_dir`, the worktree goes to `<worktree_dir>/<branch-slug>`.
+/// Otherwise it is a sibling of the repo: `<repo-parent>/<repo-name>-<branch-slug>`.
+pub fn worktree_path(repo: &Path, worktree_dir: Option<&Path>, branch: &str) -> PathBuf {
+    let slug = crate::core::model::slugify(branch);
+    let slug = if slug.is_empty() { "worktree".to_string() } else { slug };
+    match worktree_dir {
+        Some(dir) => dir.join(slug),
+        None => {
+            let name = repo
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("repo");
+            let parent = repo.parent().unwrap_or(repo);
+            parent.join(format!("{}-{}", name, slug))
+        }
+    }
+}
+
+fn ref_exists(repo: &Path, refname: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--verify", "--quiet", refname])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Create a new worktree at `path` for `branch`.
+///
+/// - Local branch exists → check it out.
+/// - Only `origin/<branch>` exists → create a tracking branch.
+/// - Otherwise → create a fresh branch from the current HEAD.
+pub fn add(repo: &Path, path: &Path, branch: &str) -> Result<(), String> {
+    let local = ref_exists(repo, &format!("refs/heads/{}", branch));
+    let remote = !local && ref_exists(repo, &format!("refs/remotes/origin/{}", branch));
+
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo).args(["worktree", "add"]);
+    if local {
+        command.arg(path).arg(branch);
+    } else if remote {
+        command
+            .args(["--track", "-b", branch])
+            .arg(path)
+            .arg(format!("origin/{}", branch));
+    } else {
+        command.args(["-b", branch]).arg(path);
+    }
+
+    let output = command
+        .output()
+        .map_err(|err| format!("Failed to run git: {}", err))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err("Failed to create worktree".to_string())
+        } else {
+            Err(stderr)
+        }
+    }
+}
+
 pub fn remove(repo: &Path, path: &Path) -> Result<(), String> {
     let output = Command::new("git")
         .arg("-C")
@@ -164,6 +232,25 @@ mod tests {
         let path = std::env::temp_dir().join(format!("tws_worktree_test_{}_{}", name, uuid::Uuid::new_v4()));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn worktree_path_sibling_by_default() {
+        let repo = PathBuf::from("/home/u/dev/tws");
+        assert_eq!(
+            worktree_path(&repo, None, "feat/foo"),
+            PathBuf::from("/home/u/dev/tws-feat-foo")
+        );
+    }
+
+    #[test]
+    fn worktree_path_uses_worktree_dir_override() {
+        let repo = PathBuf::from("/home/u/dev/tws");
+        let dir = PathBuf::from("/home/u/worktrees");
+        assert_eq!(
+            worktree_path(&repo, Some(&dir), "feat/foo"),
+            PathBuf::from("/home/u/worktrees/feat-foo")
+        );
     }
 
     #[test]
