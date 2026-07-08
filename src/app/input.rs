@@ -1475,8 +1475,13 @@ impl App {
     /// Attach or switch to a tmux session by name.
     pub(super) fn attach_to_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
         if tmux::is_inside_tmux() {
-            let _ = tmux::switch_client(session_name);
-            self.running = false;
+            match tmux::switch_client(session_name) {
+                Ok(()) => self.running = false,
+                Err(err) => {
+                    self.set_error(format!("Failed to switch to session: {}", err));
+                    return Ok(());
+                }
+            }
         } else {
             // Outside tmux: suspend TUI, attach (blocks), then resume TUI
             tui::restore()?;

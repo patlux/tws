@@ -88,15 +88,30 @@ pub fn load() -> io::Result<Vec<Collection>> {
         return Ok(Vec::new());
     }
     let data = fs::read_to_string(&path)?;
-    let collections: Vec<Collection> =
-        serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(collections)
+    match serde_json::from_str::<Vec<Collection>>(&data) {
+        Ok(collections) => Ok(collections),
+        Err(e) => {
+            // Try the backup written before the last successful save.
+            let bak = path.with_extension("json.bak");
+            if let Ok(bak_data) = fs::read_to_string(&bak)
+                && let Ok(collections) = serde_json::from_str::<Vec<Collection>>(&bak_data)
+            {
+                return Ok(collections);
+            }
+            Err(io::Error::new(io::ErrorKind::InvalidData, e))
+        }
+    }
 }
 
 pub fn save(collections: &[Collection]) -> io::Result<()> {
     ensure_config_dir()?;
     let data = serde_json::to_string_pretty(collections)?;
-    write_atomic(&state_file(), &data)?;
+    let path = state_file();
+    // Keep the previous good state as a backup before replacing it.
+    if path.exists() {
+        let _ = fs::copy(&path, path.with_extension("json.bak"));
+    }
+    write_atomic(&path, &data)?;
     Ok(())
 }
 
