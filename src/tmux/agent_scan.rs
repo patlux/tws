@@ -73,10 +73,14 @@ fn list_children_of(parent_pids: &[u32]) -> Option<String> {
 }
 
 fn list_all_panes() -> Option<String> {
+    // Filter tws-managed sessions on the tmux side so panes of unrelated
+    // sessions never cross the process boundary.
     let output = Command::new("tmux")
         .args([
             "list-panes",
             "-a",
+            "-f",
+            "#{||:#{m:tws_*,#{session_name}},#{m:twsr_*,#{session_name}}}",
             "-F",
             "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_pid}\t#{pane_title}",
         ])
