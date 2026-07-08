@@ -447,13 +447,16 @@ impl App {
         // Stage pin restore before the initial scan so the first do_agent_scan picks it up.
         self.pending_pin_restore = ui_state.pins;
 
-        // Initial session refresh (must run first so session children exist in the tree)
-        self.do_refresh_sessions();
-
-        // Restore expansion state
+        // Restore expansion state before the initial refresh so Git worktrees are
+        // discovered only for threads the user actually has expanded.
         for path in ui_state.open_nodes {
             self.tree_state.open(path);
         }
+
+        // Initial session refresh after restoring open nodes: active tmux sessions
+        // are always refreshed, worktree discovery is scoped to expanded threads.
+        self.do_refresh_sessions();
+
         // Restore last selection
         if let Some(sel) = ui_state.selected {
             self.tree_state.select(sel);
@@ -1163,9 +1166,21 @@ impl App {
             Action::Quit => self.running = false,
             Action::MoveDown => { self.tree_state.key_down(); }
             Action::MoveUp => { self.tree_state.key_up(); }
-            Action::MoveLeft => { self.tree_state.key_left(); }
-            Action::MoveRight => { self.tree_state.key_right(); }
-            Action::ToggleSelect => { self.tree_state.toggle_selected(); }
+            Action::MoveLeft => {
+                if self.tree_state.key_left() {
+                    self.refresh_worktree_sessions();
+                }
+            }
+            Action::MoveRight => {
+                if self.tree_state.key_right() {
+                    self.refresh_worktree_sessions();
+                }
+            }
+            Action::ToggleSelect => {
+                if self.tree_state.toggle_selected() {
+                    self.refresh_worktree_sessions();
+                }
+            }
             Action::Enter => self.start_enter(terminal)?,
             Action::Deselect => { self.tree_state.select(Vec::new()); }
             Action::Add => self.start_add(),
@@ -1196,7 +1211,10 @@ impl App {
             Action::RecentSession3 => self.attach_recent(2, terminal)?,
             Action::RecentSession4 => self.attach_recent(3, terminal)?,
             Action::RecentSession5 => self.attach_recent(4, terminal)?,
-            Action::ExpandAll => self.toggle_expand_all(),
+            Action::ExpandAll => {
+                self.toggle_expand_all();
+                self.refresh_worktree_sessions();
+            }
             _ => {}
         }
         Ok(())
@@ -2370,6 +2388,9 @@ impl App {
             let Some((col_idx, thread_idx)) = self.find_thread_for_worktree_config(cfg) else {
                 continue;
             };
+            if !self.is_worktree_thread_expanded(col_idx, thread_idx) {
+                continue;
+            }
             let repo = expand_home(&cfg.repo);
             let options = DiscoverOptions {
                 include_main: cfg.include_main(),
@@ -2420,6 +2441,21 @@ impl App {
         }
 
         self.state.refresh_worktree_sessions(sessions);
+    }
+
+    fn is_worktree_thread_expanded(&self, col_idx: usize, thread_idx: usize) -> bool {
+        let Some(col) = self.state.collections.get(col_idx) else {
+            return false;
+        };
+        let Some(thread) = col.threads.get(thread_idx) else {
+            return false;
+        };
+        let path = if col.is_root {
+            vec![thread.id.to_string()]
+        } else {
+            vec![col.id.to_string(), thread.id.to_string()]
+        };
+        self.tree_state.opened().contains(&path)
     }
 
     fn find_thread_for_worktree_config(&self, cfg: &WorktreeConfig) -> Option<(usize, usize)> {
