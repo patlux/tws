@@ -39,6 +39,10 @@ pub enum Action {
     ShowHidden,
     PinAgent,
     PinAgentSlot,
+    /// First press arms, second press jumps to the top (vim `gg`).
+    JumpTop,
+    JumpBottom,
+    SwitchFocus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -149,6 +153,9 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "show_hidden" => Ok(Action::ShowHidden),
         "pin_agent" => Ok(Action::PinAgent),
         "pin_agent_slot" => Ok(Action::PinAgentSlot),
+        "jump_top" => Ok(Action::JumpTop),
+        "jump_bottom" => Ok(Action::JumpBottom),
+        "switch_focus" => Ok(Action::SwitchFocus),
         _ => Err(format!("unknown action: {:?}", s)),
     }
 }
@@ -233,6 +240,9 @@ impl Keymap {
         bind!(M::Normal, KeyCode::Char('4'), KeyModifiers::NONE,  A::RecentSession4);
         bind!(M::Normal, KeyCode::Char('5'), KeyModifiers::NONE,  A::RecentSession5);
         bind!(M::Normal, KeyCode::Char('v'), KeyModifiers::NONE,  A::ToggleView);
+        bind!(M::Normal, KeyCode::Char('g'), KeyModifiers::NONE,  A::JumpTop);
+        bind!(M::Normal, KeyCode::Char('G'), KeyModifiers::SHIFT, A::JumpBottom);
+        bind!(M::Normal, KeyCode::Tab,       KeyModifiers::NONE,  A::SwitchFocus);
 
         // ── Agents mode ──────────────────────────────────────────────────────
         bind!(M::Agents, KeyCode::Char('j'), KeyModifiers::NONE, A::MoveDown);
@@ -244,6 +254,8 @@ impl Keymap {
         bind!(M::Agents, KeyCode::Char('q'), KeyModifiers::NONE,  A::Quit);
         bind!(M::Agents, KeyCode::Char('p'), KeyModifiers::NONE,  A::PinAgent);
         bind!(M::Agents, KeyCode::Char('P'), KeyModifiers::SHIFT, A::PinAgentSlot);
+        bind!(M::Agents, KeyCode::Char('g'), KeyModifiers::NONE,  A::JumpTop);
+        bind!(M::Agents, KeyCode::Char('G'), KeyModifiers::SHIFT, A::JumpBottom);
 
         // ── Notes mode ───────────────────────────────────────────────────────
         bind!(M::Notes, KeyCode::Enter,     KeyModifiers::NONE, A::OpenEditor);
@@ -379,6 +391,18 @@ mod tests {
     fn parse_special_char() {
         let key = parse_key("/").unwrap();
         assert_eq!(key.code, KeyCode::Char('/'));
+    }
+
+    #[test]
+    fn parse_jump_and_focus_actions() {
+        assert_eq!(parse_action("jump_top").unwrap(), Action::JumpTop);
+        assert_eq!(parse_action("jump_bottom").unwrap(), Action::JumpBottom);
+        assert_eq!(parse_action("switch_focus").unwrap(), Action::SwitchFocus);
+        let km = Keymap::default_bindings();
+        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('g'), KeyModifiers::NONE), Some(Action::JumpTop));
+        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('G'), KeyModifiers::SHIFT), Some(Action::JumpBottom));
+        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Tab, KeyModifiers::NONE), Some(Action::SwitchFocus));
+        assert_eq!(km.resolve(KeyMode::Agents, KeyCode::Char('g'), KeyModifiers::NONE), Some(Action::JumpTop));
     }
 
     #[test]

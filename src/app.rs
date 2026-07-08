@@ -1160,15 +1160,16 @@ impl App {
             return self.handle_agents_view_key(code, modifiers, terminal);
         }
 
-        // Focus switching: Tab toggles, Ctrl+Arrow for directional switch
-        let is_focus_switch = code == KeyCode::Tab
+        // Focus switching: SwitchFocus (default Tab) toggles, Ctrl+Arrow directional
+        let is_switch_action = normal_action == Some(Action::SwitchFocus);
+        let is_focus_switch = is_switch_action
             || (ctrl && code == KeyCode::Left)
             || (ctrl && code == KeyCode::Right);
 
         if is_focus_switch {
-            let wants_notes = code == KeyCode::Tab && matches!(self.focus, Focus::Tree)
+            let wants_notes = is_switch_action && matches!(self.focus, Focus::Tree)
                 || (ctrl && code == KeyCode::Right);
-            let wants_tree = code == KeyCode::Tab && matches!(self.focus, Focus::Notes)
+            let wants_tree = is_switch_action && matches!(self.focus, Focus::Notes)
                 || (ctrl && code == KeyCode::Left);
 
             if wants_notes {
@@ -1201,19 +1202,18 @@ impl App {
     }
 
     fn handle_jump_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let no_mods = modifiers.difference(KeyModifiers::SHIFT).is_empty();
-        match (code, no_mods) {
-            (KeyCode::Char('g'), true) if self.jump_to_top_pending => {
+        match self.keymap.resolve(KeyMode::Normal, code, modifiers) {
+            Some(Action::JumpTop) if self.jump_to_top_pending => {
                 self.jump_to_top_pending = false;
                 self.jump_to_tree_edge(false);
                 self.sync_note_editor();
                 true
             }
-            (KeyCode::Char('g'), true) => {
+            Some(Action::JumpTop) => {
                 self.jump_to_top_pending = true;
                 true
             }
-            (KeyCode::Char('G'), true) => {
+            Some(Action::JumpBottom) => {
                 self.jump_to_top_pending = false;
                 self.jump_to_tree_edge(true);
                 self.sync_note_editor();
@@ -1227,18 +1227,17 @@ impl App {
     }
 
     fn handle_agents_jump_key(&mut self, code: KeyCode, modifiers: KeyModifiers, agent_count: usize) -> bool {
-        let no_mods = modifiers.difference(KeyModifiers::SHIFT).is_empty();
-        match (code, no_mods) {
-            (KeyCode::Char('g'), true) if self.jump_to_top_pending => {
+        match self.keymap.resolve(KeyMode::Agents, code, modifiers) {
+            Some(Action::JumpTop) if self.jump_to_top_pending => {
                 self.jump_to_top_pending = false;
                 self.agent_list_cursor = 0;
                 true
             }
-            (KeyCode::Char('g'), true) => {
+            Some(Action::JumpTop) => {
                 self.jump_to_top_pending = true;
                 true
             }
-            (KeyCode::Char('G'), true) => {
+            Some(Action::JumpBottom) => {
                 self.jump_to_top_pending = false;
                 self.agent_list_cursor = agent_count.saturating_sub(1);
                 true
