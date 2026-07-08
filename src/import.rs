@@ -86,8 +86,7 @@ pub fn run() -> io::Result<()> {
 
         if confirm("  Proceed?")? {
             match tmux::rename_session(session_name, &new_name) {
-                Ok(true) => println!("  Renamed successfully.\n"),
-                Ok(false) => println!("  tmux rename failed.\n"),
+                Ok(()) => println!("  Renamed successfully.\n"),
                 Err(e) => println!("  Error: {}\n", e),
             }
         } else {

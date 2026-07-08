@@ -1,6 +1,31 @@
 use std::path::Path;
 use std::process::Command;
 
+/// Run a tmux command with `.output()` (never inheriting stdio, so tmux
+/// errors can't corrupt the raw-mode screen) and surface stderr on failure.
+fn run_tmux(args: &[&str]) -> Result<(), String> {
+    let output = Command::new("tmux")
+        .args(args)
+        .output()
+        .map_err(|err| format!("failed to run tmux: {}", err))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err("tmux command failed".to_string())
+        } else {
+            Err(stderr)
+        }
+    }
+}
+
+/// Exact-match session target (`=name`) so tmux doesn't prefix-match
+/// another session with a similar name.
+fn exact(name: &str) -> String {
+    format!("={}", name)
+}
+
 /// Returns the names of all running tmux sessions.
 /// Returns an empty Vec if the tmux server isn't running.
 pub fn list_sessions() -> Vec<String> {
@@ -49,73 +74,65 @@ pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
 }
 
 /// Creates a new detached tmux session with the given name.
-pub fn new_session(name: &str) -> std::io::Result<bool> {
-    let status = Command::new("tmux")
-        .args(["new-session", "-d", "-s", name])
-        .status()?;
-    Ok(status.success())
+pub fn new_session(name: &str) -> Result<(), String> {
+    run_tmux(&["new-session", "-d", "-s", name])
 }
 
 /// Creates a new detached tmux session with the given name and working directory.
-pub fn new_session_in_dir(name: &str, cwd: &Path) -> std::io::Result<bool> {
-    let status = Command::new("tmux")
+pub fn new_session_in_dir(name: &str, cwd: &Path) -> Result<(), String> {
+    let output = Command::new("tmux")
         .args(["new-session", "-d", "-s", name, "-c"])
         .arg(cwd)
-        .status()?;
-    Ok(status.success())
+        .output()
+        .map_err(|err| format!("failed to run tmux: {}", err))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err("tmux new-session failed".to_string())
+        } else {
+            Err(stderr)
+        }
+    }
 }
 
 /// Kills the tmux session with the given name.
-pub fn kill_session(name: &str) -> std::io::Result<bool> {
-    let status = Command::new("tmux")
-        .args(["kill-session", "-t", name])
-        .status()?;
-    Ok(status.success())
+pub fn kill_session(name: &str) -> Result<(), String> {
+    run_tmux(&["kill-session", "-t", &exact(name)])
 }
 
 /// Renames a tmux session.
-pub fn rename_session(old_name: &str, new_name: &str) -> std::io::Result<bool> {
-    let status = Command::new("tmux")
-        .args(["rename-session", "-t", old_name, new_name])
-        .status()?;
-    Ok(status.success())
+pub fn rename_session(old_name: &str, new_name: &str) -> Result<(), String> {
+    run_tmux(&["rename-session", "-t", &exact(old_name), new_name])
 }
 
 /// Switches the current tmux client to the given session.
 /// Non-blocking — only works when already inside tmux.
-pub fn switch_client(name: &str) -> std::io::Result<bool> {
-    let output = Command::new("tmux")
-        .args(["switch-client", "-t", name])
-        .output()?;
-    Ok(output.status.success())
+pub fn switch_client(name: &str) -> Result<(), String> {
+    run_tmux(&["switch-client", "-t", &exact(name)])
 }
 
 /// Attaches to the given tmux session, inheriting stdio.
 /// **Blocks** until the user detaches. Only use outside tmux.
 pub fn attach_session(name: &str) -> std::io::Result<bool> {
     let status = Command::new("tmux")
-        .args(["attach-session", "-t", name])
+        .args(["attach-session", "-t", &exact(name)])
         .status()?;
     Ok(status.success())
 }
 
 /// Selects the given window in the target session.
 /// Works across sessions — doesn't require being attached to that session.
-pub fn select_window(session_name: &str, window_index: u32) -> std::io::Result<bool> {
-    let target = format!("{}:{}", session_name, window_index);
-    let output = Command::new("tmux")
-        .args(["select-window", "-t", &target])
-        .output()?;
-    Ok(output.status.success())
+pub fn select_window(session_name: &str, window_index: u32) -> Result<(), String> {
+    let target = format!("={}:{}", session_name, window_index);
+    run_tmux(&["select-window", "-t", &target])
 }
 
 /// Selects the given pane (by global pane ID like "%5").
 /// Works across sessions — doesn't require being attached to that session.
-pub fn select_pane(pane_id: &str) -> std::io::Result<bool> {
-    let output = Command::new("tmux")
-        .args(["select-pane", "-t", pane_id])
-        .output()?;
-    Ok(output.status.success())
+pub fn select_pane(pane_id: &str) -> Result<(), String> {
+    run_tmux(&["select-pane", "-t", pane_id])
 }
 
 /// Captures the visible content of a tmux pane, including ANSI escape sequences.

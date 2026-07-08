@@ -1883,7 +1883,10 @@ impl App {
                 let dest_thread: usize = match parts[1].parse() { Ok(v) => v, Err(_) => return };
 
                 if let Some(new_tmux_name) = self.state.make_session_name(dest_col, dest_thread, &session_label) {
-                    let _ = tmux::rename_session(&session_name, &new_tmux_name);
+                    if let Err(err) = tmux::rename_session(&session_name, &new_tmux_name) {
+                        self.set_error(format!("Failed to move session: {}", err));
+                        return;
+                    }
                     self.notes.rename(&session_name, &new_tmux_name);
                     if self.marked_sessions.remove(&session_name) {
                         self.marked_sessions.insert(new_tmux_name.clone());
@@ -2055,17 +2058,27 @@ impl App {
                         })
                         .collect();
                     self.state.rename_collection(idx, trimmed);
+                    let mut rename_errors = Vec::new();
                     for (old_name, label, thread_idx) in &old_sessions {
                         if let Some(new_name) = self.state.make_session_name(idx, *thread_idx, label) {
-                            let _ = tmux::rename_session(old_name, &new_name);
-                            if self.marked_sessions.remove(old_name) {
-                                self.marked_sessions.insert(new_name);
+                            match tmux::rename_session(old_name, &new_name) {
+                                Ok(()) => {
+                                    self.notes.rename(old_name, &new_name);
+                                    if self.marked_sessions.remove(old_name) {
+                                        self.marked_sessions.insert(new_name);
+                                    }
+                                }
+                                Err(err) => rename_errors.push(format!("{}: {}", old_name, err)),
                             }
                         }
                     }
                     self.do_refresh_sessions();
                     self.save_state();
-                    self.set_flash("Collection renamed");
+                    if rename_errors.is_empty() {
+                        self.set_flash("Collection renamed");
+                    } else {
+                        self.set_error(format!("Collection renamed, but tmux rename failed:\n{}", rename_errors.join("\n")));
+                    }
                 }
                 InputPurpose::RenameThread { col_idx, thread_idx } => {
                     // Collect old tmux session names before the rename changes the prefix.
@@ -2079,17 +2092,27 @@ impl App {
                         })
                         .unwrap_or_default();
                     self.state.rename_thread(col_idx, thread_idx, trimmed);
+                    let mut rename_errors = Vec::new();
                     for (old_name, label) in &old_sessions {
                         if let Some(new_name) = self.state.make_session_name(col_idx, thread_idx, label) {
-                            let _ = tmux::rename_session(old_name, &new_name);
-                            if self.marked_sessions.remove(old_name) {
-                                self.marked_sessions.insert(new_name);
+                            match tmux::rename_session(old_name, &new_name) {
+                                Ok(()) => {
+                                    self.notes.rename(old_name, &new_name);
+                                    if self.marked_sessions.remove(old_name) {
+                                        self.marked_sessions.insert(new_name);
+                                    }
+                                }
+                                Err(err) => rename_errors.push(format!("{}: {}", old_name, err)),
                             }
                         }
                     }
                     self.do_refresh_sessions();
                     self.save_state();
-                    self.set_flash("Thread renamed");
+                    if rename_errors.is_empty() {
+                        self.set_flash("Thread renamed");
+                    } else {
+                        self.set_error(format!("Thread renamed, but tmux rename failed:\n{}", rename_errors.join("\n")));
+                    }
                 }
                 InputPurpose::NewSession { col_idx, thread_idx } => {
                     if let Some(session_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
@@ -2111,12 +2134,19 @@ impl App {
                 }
                 InputPurpose::RenameSession { col_idx, thread_idx, old_tmux_name } => {
                     if let Some(new_tmux_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
-                        let _ = tmux::rename_session(&old_tmux_name, &new_tmux_name);
-                        if self.marked_sessions.remove(&old_tmux_name) {
-                            self.marked_sessions.insert(new_tmux_name.clone());
+                        match tmux::rename_session(&old_tmux_name, &new_tmux_name) {
+                            Ok(()) => {
+                                self.notes.rename(&old_tmux_name, &new_tmux_name);
+                                if self.marked_sessions.remove(&old_tmux_name) {
+                                    self.marked_sessions.insert(new_tmux_name.clone());
+                                }
+                                self.do_refresh_sessions();
+                                self.set_flash("Session renamed");
+                            }
+                            Err(err) => {
+                                self.set_error(format!("Failed to rename session: {}", err));
+                            }
                         }
-                        self.do_refresh_sessions();
-                        self.set_flash("Session renamed");
                     }
                 }
                 InputPurpose::RenameAgent { pane_id } => {
@@ -2152,8 +2182,11 @@ impl App {
                             session_names.push(s.tmux_session_name.clone());
                         }
                     }
+                    let mut kill_errors = Vec::new();
                     for name in &session_names {
-                        let _ = tmux::kill_session(name);
+                        if let Err(err) = tmux::kill_session(name) {
+                            kill_errors.push(format!("{}: {}", name, err));
+                        }
                         self.marked_sessions.remove(name);
                     }
                     self.notes.remove_all(&note_keys);
@@ -2167,7 +2200,11 @@ impl App {
                     self.tree_state.select(new_sel);
                     self.save_state();
                     self.do_refresh_sessions();
-                    self.set_flash("Collection deleted");
+                    if kill_errors.is_empty() {
+                        self.set_flash("Collection deleted");
+                    } else {
+                        self.set_error(format!("Collection deleted, but killing sessions failed:\n{}", kill_errors.join("\n")));
+                    }
                     self.sync_note_editor();
                 }
                 ConfirmPurpose::DeleteThread { col_idx, thread_idx, .. } => {
@@ -2182,8 +2219,11 @@ impl App {
                             s.tmux_session_name.clone()
                         })
                         .collect();
+                    let mut kill_errors = Vec::new();
                     for name in session_names {
-                        let _ = tmux::kill_session(&name);
+                        if let Err(err) = tmux::kill_session(&name) {
+                            kill_errors.push(format!("{}: {}", name, err));
+                        }
                         self.marked_sessions.remove(&name);
                     }
                     self.notes.remove_all(&note_keys);
@@ -2198,11 +2238,18 @@ impl App {
                     self.tree_state.select(new_sel);
                     self.save_state();
                     self.do_refresh_sessions();
-                    self.set_flash("Thread deleted");
+                    if kill_errors.is_empty() {
+                        self.set_flash("Thread deleted");
+                    } else {
+                        self.set_error(format!("Thread deleted, but killing sessions failed:\n{}", kill_errors.join("\n")));
+                    }
                     self.sync_note_editor();
                 }
                 ConfirmPurpose::KillSession { session_name } => {
-                    let _ = tmux::kill_session(&session_name);
+                    if let Err(err) = tmux::kill_session(&session_name) {
+                        self.set_error(format!("Failed to kill session: {}", err));
+                        return;
+                    }
                     self.marked_sessions.remove(&session_name);
                     self.notes.remove(&session_name);
                     self.do_refresh_sessions();
@@ -2228,8 +2275,11 @@ impl App {
                         .iter()
                         .map(|s| s.tmux_session_name.clone())
                         .collect();
+                    let mut kill_errors = Vec::new();
                     for name in &names {
-                        let _ = tmux::kill_session(name);
+                        if let Err(err) = tmux::kill_session(name) {
+                            kill_errors.push(format!("{}: {}", name, err));
+                        }
                         self.marked_sessions.remove(name);
                     }
                     self.notes.remove_all(&names);
@@ -2243,18 +2293,29 @@ impl App {
                         vec![col.id.to_string(), thread.id.to_string()]
                     };
                     self.tree_state.select(thread_path);
-                    self.set_flash("All sessions killed");
+                    if kill_errors.is_empty() {
+                        self.set_flash("All sessions killed");
+                    } else {
+                        self.set_error(format!("Killing sessions failed:\n{}", kill_errors.join("\n")));
+                    }
                     self.sync_note_editor();
                 }
                 ConfirmPurpose::KillMarkedSessions { session_names } => {
                     let count = session_names.len();
+                    let mut kill_errors = Vec::new();
                     for name in &session_names {
-                        let _ = tmux::kill_session(name);
+                        if let Err(err) = tmux::kill_session(name) {
+                            kill_errors.push(format!("{}: {}", name, err));
+                        }
                     }
                     self.notes.remove_all(&session_names);
                     self.marked_sessions.clear();
                     self.do_refresh_sessions();
-                    self.set_flash(&format!("Killed {} sessions", count));
+                    if kill_errors.is_empty() {
+                        self.set_flash(&format!("Killed {} sessions", count));
+                    } else {
+                        self.set_error(format!("Killing sessions failed:\n{}", kill_errors.join("\n")));
+                    }
                     self.sync_note_editor();
                 }
                 ConfirmPurpose::DeleteWorktree { repo, path, name, tmux_session_name, kill_session } => {
@@ -2323,13 +2384,19 @@ impl App {
 
     /// Launch a new tmux session with the given name and attach to it.
     fn launch_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
-        tmux::new_session(session_name)?;
+        if let Err(err) = tmux::new_session(session_name) {
+            self.set_error(format!("Failed to create session: {}", err));
+            return Ok(());
+        }
         self.attach_to_session(session_name, terminal)
     }
 
     /// Launch a new tmux session in a worktree directory and attach to it.
     fn launch_session_in_dir(&mut self, session_name: &str, cwd: PathBuf, terminal: &mut Tui) -> std::io::Result<()> {
-        tmux::new_session_in_dir(session_name, &cwd)?;
+        if let Err(err) = tmux::new_session_in_dir(session_name, &cwd) {
+            self.set_error(format!("Failed to create session: {}", err));
+            return Ok(());
+        }
         self.attach_to_session(session_name, terminal)
     }
 
