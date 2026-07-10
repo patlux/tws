@@ -87,7 +87,7 @@ pub struct Theme {
     // Agents
     pub agent: Style,
     pub agent_connector: Style,
-    /// Pi work-status indicator: spinner while working.
+    /// Pi work-status indicator while actively working.
     pub pi_working: Style,
     /// Pi work-status indicator: retry/cancel/incomplete warning.
     pub pi_warning: Style,

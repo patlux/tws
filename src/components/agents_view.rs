@@ -2,11 +2,11 @@ use ratatui::layout::Alignment;
 use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
-use crate::core::pi_status::PiIndicator;
+use crate::core::pi_status::{PiIndicator, WORKING_INDICATOR};
 use crate::core::state::FlatAgent;
 use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect, theme: &Theme, pi_spinner: &str) {
+pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect, theme: &Theme) {
     if agents.is_empty() {
         let available_height = area.height.saturating_sub(2);
         let top_padding = available_height.saturating_sub(1) / 2;
@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
         ];
         match a.pi_indicator {
             Some(PiIndicator::Working) => {
-                spans.push(Span::styled(format!("{} ", pi_spinner), theme.pi_working));
+                spans.push(Span::styled(format!("{} ", WORKING_INDICATOR), theme.pi_working));
             }
             Some(PiIndicator::Retrying) => {
                 spans.push(Span::styled("↻ ".to_string(), theme.pi_warning));

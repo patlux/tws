@@ -116,7 +116,7 @@ tws scans tmux panes periodically and identifies running AI coding agents by the
 
 With the companion [Pi](https://github.com/earendil-works/pi-mono) package [`pi-tmux-session-map`](https://github.com/patlux/pi-tmux-session-map) installed, tws shows live work state for Pi agents directly in the session list:
 
-- `⠋ pi` — Pi is currently working on a prompt (animated spinner)
+- `● pi` — Pi is currently working on a prompt (static activity marker)
 - `↻ pi` — Pi hit a provisional problem and may retry automatically (orange)
 - `✓ pi` — Pi finished its last prompt successfully (green)
 - `■ pi` — the prompt was cancelled/aborted (orange)

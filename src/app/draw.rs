@@ -159,8 +159,7 @@ impl App {
 
             // Tree area or agents flat-list view
             if matches!(self.view_mode, ViewMode::Agents) {
-                let pi_spinner = self.pi_spinner_frame();
-                agents_view::render(frame, &flat_agents, self.agent_list_cursor, tree_area, &self.theme, pi_spinner);
+                agents_view::render(frame, &flat_agents, self.agent_list_cursor, tree_area, &self.theme);
             } else {
                 let block = Block::default();
                 let deleting_labels = self.worktree_delete_progress_labels();
@@ -168,13 +167,11 @@ impl App {
                 let deleting_icon = self.worktree_spinner_frame();
                 let marked_sessions = &self.marked_sessions;
                 let is_marked = |session_name: &str| marked_sessions.contains(session_name);
-                let pi_spinner = self.pi_spinner_frame();
                 let items = tree_view::build_tree_items(
                     &self.state,
                     &self.tree_state,
                     &self.theme,
                     &deleting_label,
-                    pi_spinner,
                 );
                 if items.is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);

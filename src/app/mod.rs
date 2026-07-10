@@ -356,8 +356,6 @@ const TRIGGER_SCAN_DEBOUNCE: Duration = Duration::from_millis(500);
 
 const NOTIFICATION_DURATION: Duration = Duration::from_secs(4);
 const DELETE_SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
-/// Braille spinner shown next to Pi agents that are currently working.
-const PI_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// How long "done" markers survive after the Pi pane died before pruning.
 const PI_STATUS_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -505,11 +503,6 @@ impl App {
     fn worktree_spinner_frame(&self) -> &'static str {
         let ticks = self.animation_start.elapsed().as_millis() / 180;
         DELETE_SPINNER[(ticks as usize) % DELETE_SPINNER.len()]
-    }
-
-    fn pi_spinner_frame(&self) -> &'static str {
-        let ticks = self.animation_start.elapsed().as_millis() / 120;
-        PI_SPINNER[(ticks as usize) % PI_SPINNER.len()]
     }
 
     fn worktree_delete_progress_labels(&self) -> HashMap<String, String> {
@@ -694,7 +687,7 @@ impl App {
             self.poll_preview_results();
 
             // Dirty-flag rendering: skip the (expensive) full redraw unless
-            // something changed or an animation/transient message is on screen.
+            // something changed or a short-lived animation/message is on screen.
             if self.needs_redraw || self.animation_active() {
                 self.draw(terminal)?;
                 self.needs_redraw = false;
@@ -741,19 +734,12 @@ impl App {
     }
 
     /// True while something on screen animates or a transient message is
-    /// visible — forces tick-rate redraws for spinners, flash and notifications.
+    /// visible — forces tick-rate redraws for deletion progress and messages.
     fn animation_active(&self) -> bool {
-        if !self.pending_worktree_deletes.is_empty() || !self.pending_worktree_creates.is_empty() {
-            return true;
-        }
-        if self.flash.is_some() || self.notification.is_some() {
-            return true;
-        }
-        // Pi spinner: only spins while some Pi agent is actively working.
-        self.state
-            .pi_statuses
-            .iter()
-            .any(|s| s.work_state == pi_status::PiWorkState::Working)
+        !self.pending_worktree_deletes.is_empty()
+            || !self.pending_worktree_creates.is_empty()
+            || self.flash.is_some()
+            || self.notification.is_some()
     }
 
     fn save_state(&mut self) {
@@ -786,5 +772,32 @@ impl App {
         if let Err(e) = persistence::save_ui(&ui) {
             self.exit_warning = Some(format!("Failed to save UI state: {}", e));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::palette::Palette;
+
+    #[test]
+    fn working_pi_status_does_not_force_tick_redraws() {
+        let palette = Palette::default();
+        let mut app = App::new(
+            AppState::empty(mux::Backend::Tmux),
+            Theme::build(&palette),
+            NoteStyleSheet::new(&palette),
+            Keymap::default_bindings(),
+            Vec::new(),
+            Vec::new(),
+        );
+        app.state.pi_statuses.push(pi_status::PiStatus {
+            pane_id: "%1".to_string(),
+            tmux_session_name: "tws_test".to_string(),
+            work_state: pi_status::PiWorkState::Working,
+            updated_at_ms: 1,
+        });
+
+        assert!(!app.animation_active());
     }
 }

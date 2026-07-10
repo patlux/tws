@@ -6,7 +6,7 @@ use ratatui::Frame;
 use tui_tree_widget::{TreeItem, TreeState};
 
 use crate::core::model::Thread;
-use crate::core::pi_status::PiIndicator;
+use crate::core::pi_status::{PiIndicator, WORKING_INDICATOR};
 use crate::core::state::{AppState, SelectedItem};
 use crate::theme::Theme;
 
@@ -18,7 +18,6 @@ pub fn build_tree_items<'a>(
     tree_state: &TreeState<String>,
     theme: &Theme,
     deleting_label: &dyn Fn(&str) -> Option<String>,
-    pi_spinner: &str,
 ) -> Vec<TreeItem<'a, String>> {
     let mut items: Vec<TreeItem<'a, String>> = Vec::new();
 
@@ -43,7 +42,6 @@ pub fn build_tree_items<'a>(
                     &thread_path,
                     theme,
                     deleting_label,
-                    pi_spinner,
                 )
             })
             .collect();
@@ -57,7 +55,6 @@ pub fn build_tree_items<'a>(
                     col.name.as_str(),
                     !should_show_parent_indicator(tree_state, &collection_path),
                     theme,
-                    pi_spinner,
                 ),
                 children,
             )
@@ -80,7 +77,6 @@ pub fn build_tree_items<'a>(
                     &thread_path,
                     theme,
                     deleting_label,
-                    pi_spinner,
                 ));
             }
         }
@@ -179,12 +175,11 @@ pub fn render_worktree_icons(
 fn pi_indicator_suffix(
     indicator: Option<PiIndicator>,
     theme: &Theme,
-    pi_spinner: &str,
 ) -> Vec<Span<'static>> {
     match indicator {
         Some(PiIndicator::Working) => vec![
             Span::raw("  "),
-            Span::styled(format!("{} pi", pi_spinner), theme.pi_working),
+            Span::styled(format!("{} pi", WORKING_INDICATOR), theme.pi_working),
         ],
         Some(PiIndicator::Retrying) => vec![
             Span::raw("  "),
@@ -220,14 +215,12 @@ fn collection_text(
     name: &str,
     is_expanded: bool,
     theme: &Theme,
-    pi_spinner: &str,
 ) -> Text<'static> {
     let mut spans = vec![Span::styled(name.to_string(), theme.collection)];
     if !is_expanded {
         spans.extend(pi_indicator_suffix(
             state.pi_indicator_for_collection(col_idx),
             theme,
-            pi_spinner,
         ));
     }
     Text::from(Line::from(spans))
@@ -240,7 +233,6 @@ fn build_thread_item<'a>(
     thread_path: &[String],
     theme: &Theme,
     deleting_label: &dyn Fn(&str) -> Option<String>,
-    pi_spinner: &str,
 ) -> TreeItem<'a, String> {
     let mut session_children: Vec<TreeItem<'a, String>> = state
         .active_sessions
@@ -259,7 +251,6 @@ fn build_thread_item<'a>(
                 spans.extend(pi_indicator_suffix(
                     state.pi_indicator_for_session(&s.tmux_session_name),
                     theme,
-                    pi_spinner,
                 ));
             }
             let session_label = Text::from(Line::from(spans));
@@ -272,7 +263,7 @@ fn build_thread_item<'a>(
                         let mut spans = vec![Span::styled("╰─ ", theme.agent_connector)];
                         match state.pi_indicator_for_agent(a) {
                             Some(PiIndicator::Working) => {
-                                spans.push(Span::styled(format!("{} ", pi_spinner), theme.pi_working));
+                                spans.push(Span::styled(format!("{} ", WORKING_INDICATOR), theme.pi_working));
                             }
                             Some(PiIndicator::Retrying) => {
                                 spans.push(Span::styled("↻ ".to_string(), theme.pi_warning));
@@ -347,7 +338,6 @@ fn build_thread_item<'a>(
             spans.extend(pi_indicator_suffix(
                 state.pi_indicator_for_thread(thread.id),
                 theme,
-                pi_spinner,
             ));
         }
         Text::from(Line::from(spans))
