@@ -41,8 +41,20 @@ pub fn render(frame: &mut Frame, agents: &[FlatAgent], cursor: usize, area: Rect
             Some(PiIndicator::Working) => {
                 spans.push(Span::styled(format!("{} ", pi_spinner), theme.pi_working));
             }
+            Some(PiIndicator::Retrying) => {
+                spans.push(Span::styled("↻ ".to_string(), theme.pi_warning));
+            }
             Some(PiIndicator::Done) => {
                 spans.push(Span::styled("✓ ".to_string(), theme.pi_done));
+            }
+            Some(PiIndicator::Cancelled) => {
+                spans.push(Span::styled("■ ".to_string(), theme.pi_warning));
+            }
+            Some(PiIndicator::Incomplete) => {
+                spans.push(Span::styled("… ".to_string(), theme.pi_warning));
+            }
+            Some(PiIndicator::Failed) => {
+                spans.push(Span::styled("! ".to_string(), theme.pi_failed));
             }
             None => {}
         }

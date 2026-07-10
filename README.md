@@ -117,7 +117,13 @@ tws scans tmux panes periodically and identifies running AI coding agents by the
 With the companion [Pi](https://github.com/earendil-works/pi-mono) package [`pi-tmux-session-map`](https://github.com/patlux/pi-tmux-session-map) installed, tws shows live work state for Pi agents directly in the session list:
 
 - `⠋ pi` — Pi is currently working on a prompt (animated spinner)
-- `✓ pi` — Pi finished its last prompt (persists even after Pi exits, until the pane's status is pruned)
+- `↻ pi` — Pi hit a provisional problem and may retry automatically (orange)
+- `✓ pi` — Pi finished its last prompt successfully (green)
+- `■ pi` — the prompt was cancelled/aborted (orange)
+- `… pi` — the response ended incomplete, for example at the token limit (orange)
+- `! pi` — Pi hit a technical error, or the process vanished while working/retrying (red)
+
+Terminal outcomes persist after Pi exits until the pane's status is pruned.
 
 The indicator appears on the session row (visible while collapsed) and on the agent entry itself, in both the tree and the agents view.
 
@@ -240,12 +246,14 @@ You can also drop a custom theme file at `~/.config/tws/themes/<name>.toml` and 
 
 ### Palette overrides
 
-Override any subset of the 7 palette colors on top of the chosen theme:
+Override any subset of the 9 palette colors on top of the chosen theme:
 
 ```toml
 [palette]
 accent = "#ff9e64"   # primary accent (threads, highlights)
 green  = "#a6e3a1"   # sessions, success states
+red    = "#f38ba8"   # errors and failed Pi states
+orange = "#fab387"   # retry, cancelled, incomplete states
 fg     = "#d4d4d4"   # foreground text
 dim    = "#a0a0a0"   # secondary text
 muted  = "#646464"   # tertiary / disabled

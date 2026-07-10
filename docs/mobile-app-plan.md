@@ -7,7 +7,7 @@ verwaltet und interaktive Terminals auf tmux-Sessions öffnet.
 ## Ziele
 
 - Multi-Host: App startet mit Host-Liste, Hosts hinzufügbar (QR-Pairing)
-- Live-Dashboard: Tree-View mit Agent-Status + Pi-Status (Spinner/Checkmark)
+- Live-Dashboard: Tree-View mit Agent-Status + semantischem Pi-Status (Working/Retry/Erfolg/Abbruch/Unvollständig/Fehler)
 - CRUD: Collections/Threads anlegen/umbenennen/löschen, Sessions erstellen/killen/umbenennen
 - Notes lesen (Markdown)
 - Interaktives Terminal auf jede tmux-Session, natives Rendering (libghostty via Termini)
@@ -155,7 +155,7 @@ kein Expo Go — natives Modul geplant).
 ### 4b — Dashboard
 
 - [ ] Tree-Screen pro Host: Collections → Threads → Sessions → Agents, collapsible
-- [ ] Status-Badges: Agent-Typ (claude/codex), Pi-Status Spinner/Checkmark (Parität zur TUI)
+- [ ] Status-Badges: Agent-Typ (claude/codex), semantische Pi-Statusmarker (Parität zur TUI)
 - [ ] Recent-Sessions-Row (Analog `recent_bar`)
 - [ ] Aktionen (Context-Menü/Swipe): Session erstellen (Thread + Label + start_dir), killen (Confirm), umbenennen; Collection/Thread CRUD
 - [ ] Notes-Viewer (react-native-markdown o. ä., read-only in v1)

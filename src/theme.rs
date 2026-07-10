@@ -89,8 +89,12 @@ pub struct Theme {
     pub agent_connector: Style,
     /// Pi work-status indicator: spinner while working.
     pub pi_working: Style,
+    /// Pi work-status indicator: retry/cancel/incomplete warning.
+    pub pi_warning: Style,
     /// Pi work-status indicator: checkmark when finished.
     pub pi_done: Style,
+    /// Pi work-status indicator: technical failure.
+    pub pi_failed: Style,
 
     // Badges
     pub badge_dot: Style,
@@ -186,7 +190,9 @@ impl Theme {
             agent: Style::new().fg(agent_color),
             agent_connector: Style::new().fg(muted_text),
             pi_working: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            pi_warning: Style::new().fg(p.orange).add_modifier(Modifier::BOLD),
             pi_done: Style::new().fg(p.green),
+            pi_failed: Style::new().fg(p.red).add_modifier(Modifier::BOLD),
 
             // Badges
             badge_dot: Style::new().fg(p.green),
@@ -300,6 +306,19 @@ mod tests {
         assert_eq!(t.thread, Style::new().fg(Color::Rgb(204, 120, 50)));
         // Session: green
         assert_eq!(t.session, Style::new().fg(Color::Rgb(130, 180, 130)));
+        // Pi warning and failure statuses use distinct semantic colors.
+        assert_eq!(
+            t.pi_warning,
+            Style::new()
+                .fg(Color::Rgb(224, 157, 73))
+                .add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            t.pi_failed,
+            Style::new()
+                .fg(Color::Rgb(220, 90, 80))
+                .add_modifier(Modifier::BOLD)
+        );
         // Highlight: bg=accent, fg=bg, bold
         assert_eq!(
             t.highlight,

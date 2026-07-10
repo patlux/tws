@@ -35,7 +35,7 @@ pub struct FlatAgent {
     pub window_index: u32,
     pub pane_id: String,
     pub pin_slot: Option<u8>,
-    /// Pi work indicator (spinner/checkmark), `None` for non-Pi agents or unknown state.
+    /// Pi work indicator (working/retrying/outcome), `None` for non-Pi agents or unknown state.
     pub pi_indicator: Option<PiIndicator>,
 }
 
@@ -442,11 +442,26 @@ impl AppState {
             .collect()
     }
 
+    fn pi_indicator_priority(indicator: PiIndicator) -> u8 {
+        match indicator {
+            PiIndicator::Working => 5,
+            PiIndicator::Retrying => 4,
+            PiIndicator::Failed => 3,
+            PiIndicator::Incomplete => 2,
+            PiIndicator::Cancelled => 1,
+            PiIndicator::Done => 0,
+        }
+    }
+
     fn merge_pi_indicator(current: Option<PiIndicator>, next: Option<PiIndicator>) -> Option<PiIndicator> {
         match (current, next) {
-            (Some(PiIndicator::Working), _) | (_, Some(PiIndicator::Working)) => Some(PiIndicator::Working),
-            (Some(PiIndicator::Done), _) | (_, Some(PiIndicator::Done)) => Some(PiIndicator::Done),
-            _ => None,
+            (None, next) => next,
+            (current, None) => current,
+            (Some(current), Some(next)) => Some(if Self::pi_indicator_priority(next) > Self::pi_indicator_priority(current) {
+                next
+            } else {
+                current
+            }),
         }
     }
 
@@ -470,31 +485,41 @@ impl AppState {
 
     /// What indicator (if any) the session row should show for Pi activity.
     ///
-    /// - `Working` if any status for this session reports `working` *and* that
-    ///   pane still hosts a live Pi agent (guards against stale files after a crash).
-    /// - `Done` if any status reports `done` — shown even after the Pi process
-    ///   exited, so finished sessions stay recognizable in the list.
+    /// Active states win over terminal outcomes. Technical failures win over
+    /// incomplete and cancelled outcomes, which in turn win over success.
+    /// A `working`/`retrying` sidecar without a live Pi process is treated as
+    /// `Failed`, covering crashes and forced termination.
     pub fn pi_indicator_for_session(&self, tmux_session_name: &str) -> Option<PiIndicator> {
-        let mut done = false;
+        let mut result = None;
         for status in self.latest_pi_statuses_for_session(tmux_session_name) {
-            match status.work_state {
-                PiWorkState::Working => {
+            let next = match status.work_state {
+                PiWorkState::Working | PiWorkState::Retrying => {
                     let live = self.agent_sessions.iter().any(|a| {
                         a.agent_type == AgentType::Pi && a.pane_id == status.pane_id
                     });
-                    if live {
-                        return Some(PiIndicator::Working);
-                    }
+                    Some(if live {
+                        match status.work_state {
+                            PiWorkState::Working => PiIndicator::Working,
+                            PiWorkState::Retrying => PiIndicator::Retrying,
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        PiIndicator::Failed
+                    })
                 }
-                PiWorkState::Done => done = true,
-                _ => {}
-            }
+                PiWorkState::Failed => Some(PiIndicator::Failed),
+                PiWorkState::Incomplete => Some(PiIndicator::Incomplete),
+                PiWorkState::Cancelled => Some(PiIndicator::Cancelled),
+                PiWorkState::Done => Some(PiIndicator::Done),
+                _ => None,
+            };
+            result = Self::merge_pi_indicator(result, next);
         }
-        if done { Some(PiIndicator::Done) } else { None }
+        result
     }
 
     /// What indicator (if any) a thread row should show for Pi activity in any
-    /// of its active sessions. `Working` wins over `Done`.
+    /// of its active sessions, using the same priority as session rows.
     pub fn pi_indicator_for_thread(&self, thread_id: Uuid) -> Option<PiIndicator> {
         self.active_sessions
             .iter()
@@ -505,7 +530,7 @@ impl AppState {
     }
 
     /// What indicator (if any) a collection row should show for Pi activity in
-    /// any visible thread. `Working` wins over `Done`.
+    /// any visible thread, using the same priority as session rows.
     pub fn pi_indicator_for_collection(&self, col_idx: usize) -> Option<PiIndicator> {
         let col = self.collections.get(col_idx)?;
         col.threads
@@ -525,6 +550,10 @@ impl AppState {
         let status = self.latest_pi_status_for_pane(&agent.pane_id)?;
         match status.work_state {
             PiWorkState::Working => Some(PiIndicator::Working),
+            PiWorkState::Retrying => Some(PiIndicator::Retrying),
+            PiWorkState::Failed => Some(PiIndicator::Failed),
+            PiWorkState::Incomplete => Some(PiIndicator::Incomplete),
+            PiWorkState::Cancelled => Some(PiIndicator::Cancelled),
             PiWorkState::Done => Some(PiIndicator::Done),
             _ => None,
         }
@@ -1707,12 +1736,16 @@ mod tests {
     }
 
     #[test]
-    fn pi_indicator_working_requires_live_pi_agent() {
+    fn pi_indicator_stale_working_becomes_failed_without_live_pi_agent() {
         let mut state = AppState::new();
         state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Working));
 
-        // No live agent for that pane → stale "working" is not shown.
-        assert_eq!(state.pi_indicator_for_session("tws_x_y_a"), None);
+        // A vanished process with a leftover "working" sidecar means Pi stopped
+        // before it could report a terminal state.
+        assert_eq!(
+            state.pi_indicator_for_session("tws_x_y_a"),
+            Some(PiIndicator::Failed)
+        );
 
         state.agent_sessions.push(make_pi_agent("%1", "tws_x_y_a"));
         assert_eq!(
@@ -1734,14 +1767,54 @@ mod tests {
     }
 
     #[test]
-    fn pi_indicator_working_wins_over_done() {
+    fn pi_indicator_terminal_outcomes_persist_without_live_agent() {
+        for (work_state, expected) in [
+            (PiWorkState::Cancelled, PiIndicator::Cancelled),
+            (PiWorkState::Incomplete, PiIndicator::Incomplete),
+            (PiWorkState::Failed, PiIndicator::Failed),
+        ] {
+            let mut state = AppState::new();
+            state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", work_state));
+            assert_eq!(state.pi_indicator_for_session("tws_x_y_a"), Some(expected));
+        }
+    }
+
+    #[test]
+    fn pi_indicator_retrying_requires_live_pi_agent() {
+        let mut state = AppState::new();
+        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Retrying));
+        assert_eq!(state.pi_indicator_for_session("tws_x_y_a"), Some(PiIndicator::Failed));
+
+        state.agent_sessions.push(make_pi_agent("%1", "tws_x_y_a"));
+        assert_eq!(
+            state.pi_indicator_for_session("tws_x_y_a"),
+            Some(PiIndicator::Retrying)
+        );
+    }
+
+    #[test]
+    fn pi_indicator_working_wins_over_failed_and_done() {
         let mut state = AppState::new();
         state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
-        state.pi_statuses.push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Working));
-        state.agent_sessions.push(make_pi_agent("%2", "tws_x_y_a"));
+        state.pi_statuses.push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Failed));
+        state.pi_statuses.push(make_pi_status("%3", "tws_x_y_a", PiWorkState::Working));
+        state.agent_sessions.push(make_pi_agent("%3", "tws_x_y_a"));
         assert_eq!(
             state.pi_indicator_for_session("tws_x_y_a"),
             Some(PiIndicator::Working)
+        );
+    }
+
+    #[test]
+    fn pi_indicator_priority_orders_outcomes() {
+        let mut state = AppState::new();
+        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
+        state.pi_statuses.push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Cancelled));
+        state.pi_statuses.push(make_pi_status("%3", "tws_x_y_a", PiWorkState::Incomplete));
+        state.pi_statuses.push(make_pi_status("%4", "tws_x_y_a", PiWorkState::Failed));
+        assert_eq!(
+            state.pi_indicator_for_session("tws_x_y_a"),
+            Some(PiIndicator::Failed)
         );
     }
 
@@ -1798,6 +1871,20 @@ mod tests {
         let thread_id = state.collections[0].threads[0].id;
         assert_eq!(state.pi_indicator_for_thread(thread_id), Some(PiIndicator::Done));
         assert_eq!(state.pi_indicator_for_collection(0), Some(PiIndicator::Done));
+    }
+
+    #[test]
+    fn pi_indicator_failed_bubbles_over_done() {
+        let mut state = AppState::with_sample_data();
+        let done_session = "tws_work_edge-device-pipeline_one".to_string();
+        let failed_session = "tws_work_edge-device-pipeline_two".to_string();
+        state.refresh_sessions(&[(done_session.clone(), 0), (failed_session.clone(), 0)]);
+        state.pi_statuses.push(make_pi_status("%1", &done_session, PiWorkState::Done));
+        state.pi_statuses.push(make_pi_status("%2", &failed_session, PiWorkState::Failed));
+
+        let thread_id = state.collections[0].threads[0].id;
+        assert_eq!(state.pi_indicator_for_thread(thread_id), Some(PiIndicator::Failed));
+        assert_eq!(state.pi_indicator_for_collection(0), Some(PiIndicator::Failed));
     }
 
     #[test]

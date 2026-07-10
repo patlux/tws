@@ -1,6 +1,8 @@
 [palette]
 accent = "#c6a0f6"
 green = "#a6da95"
+red = "#ed8796"
+orange = "#f5a97f"
 fg = "#cad3f5"
 dim = "#a5adcb"
 muted = "#5b6078"

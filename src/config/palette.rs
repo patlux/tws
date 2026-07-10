@@ -43,6 +43,10 @@ pub struct Palette {
     #[serde(deserialize_with = "deserialize_color")]
     pub green: Color,
     #[serde(deserialize_with = "deserialize_color")]
+    pub red: Color,
+    #[serde(deserialize_with = "deserialize_color")]
+    pub orange: Color,
+    #[serde(deserialize_with = "deserialize_color")]
     pub fg: Color,
     #[serde(deserialize_with = "deserialize_color")]
     pub dim: Color,
@@ -59,6 +63,8 @@ impl Default for Palette {
         Self {
             accent: Color::Rgb(204, 120, 50),
             green: Color::Rgb(130, 180, 130),
+            red: Color::Rgb(220, 90, 80),
+            orange: Color::Rgb(224, 157, 73),
             fg: Color::Rgb(212, 212, 212),
             dim: Color::Rgb(160, 160, 160),
             // ≥ WCAG AA contrast (≈4.6:1) against bg (30,30,30)
@@ -78,6 +84,10 @@ pub struct PaletteOverride {
     #[serde(default, deserialize_with = "deserialize_option_color")]
     pub green: Option<Color>,
     #[serde(default, deserialize_with = "deserialize_option_color")]
+    pub red: Option<Color>,
+    #[serde(default, deserialize_with = "deserialize_option_color")]
+    pub orange: Option<Color>,
+    #[serde(default, deserialize_with = "deserialize_option_color")]
     pub fg: Option<Color>,
     #[serde(default, deserialize_with = "deserialize_option_color")]
     pub dim: Option<Color>,
@@ -96,6 +106,8 @@ impl Palette {
         Palette {
             accent: overrides.accent.unwrap_or(self.accent),
             green:  overrides.green.unwrap_or(self.green),
+            red:    overrides.red.unwrap_or(self.red),
+            orange: overrides.orange.unwrap_or(self.orange),
             fg:     overrides.fg.unwrap_or(self.fg),
             dim:    overrides.dim.unwrap_or(self.dim),
             muted:  overrides.muted.unwrap_or(self.muted),
@@ -157,6 +169,8 @@ mod tests {
         let p = Palette::default();
         assert_eq!(p.accent, Color::Rgb(204, 120, 50));
         assert_eq!(p.green, Color::Rgb(130, 180, 130));
+        assert_eq!(p.red, Color::Rgb(220, 90, 80));
+        assert_eq!(p.orange, Color::Rgb(224, 157, 73));
         assert_eq!(p.fg, Color::Rgb(212, 212, 212));
         assert_eq!(p.dim, Color::Rgb(160, 160, 160));
         assert_eq!(p.muted, Color::Rgb(125, 125, 125));
@@ -169,10 +183,14 @@ mod tests {
         let toml_str = r##"
             accent = "#ff0000"
             green  = "#00ff00"
+            red    = "#0000ff"
+            orange = "#010203"
         "##;
         let p: Palette = toml::from_str(toml_str).expect("should deserialize");
         assert_eq!(p.accent, Color::Rgb(255, 0, 0));
         assert_eq!(p.green, Color::Rgb(0, 255, 0));
+        assert_eq!(p.red, Color::Rgb(0, 0, 255));
+        assert_eq!(p.orange, Color::Rgb(1, 2, 3));
         // unspecified fields fall back to defaults
         let defaults = Palette::default();
         assert_eq!(p.fg, defaults.fg);

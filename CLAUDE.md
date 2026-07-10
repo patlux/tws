@@ -79,7 +79,7 @@ Immediate-mode: all widgets are rebuilt from `AppState` each frame. Components a
 - Sessions are launched detached (`tmux new-session -d`), then attached via `switch-client` (inside tmux) or `attach-session` (outside tmux)
 - Agent detection: `tmux list-panes -a` gets pane PIDs → `ps -e` finds child processes → match against known agent binaries (`claude`, `codex`)
 - Agent renames are in-memory only (not persisted), preserved across 30s scan refreshes via a `renamed` flag and HashMap snapshot/restore in `do_agent_scan()`
-- Pi work status: the companion `pi-tmux-session-map` Pi package writes JSON status files (`working`/`done`/…) per pane to `~/.config/tws/pi-status/` and touches `agent.trigger`; `do_agent_scan()` loads and prunes them, rendering shows a spinner (working) or checkmark (done) on session rows and agent entries
+- Pi work status: the companion `pi-tmux-session-map` Pi package writes JSON status files (`working`/`retrying`/`done`/`cancelled`/`incomplete`/`failed`/…) per pane to `~/.config/tws/pi-status/` and touches `agent.trigger`; `do_agent_scan()` loads and prunes them, rendering semantic status markers on session rows and agent entries
 
 ## Tests
 

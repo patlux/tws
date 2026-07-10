@@ -145,8 +145,7 @@ pub fn render_worktree_icons(
 }
 
 /// Build a TreeItem for a single thread (shared between regular and root threads).
-/// Spans appended to a collection/thread/session row for Pi activity: `⠋ pi`
-/// while working, `✓ pi` once finished. Empty when there is nothing to report.
+/// Spans appended to a collection/thread/session row for Pi activity.
 fn pi_indicator_suffix(
     indicator: Option<PiIndicator>,
     theme: &Theme,
@@ -157,9 +156,25 @@ fn pi_indicator_suffix(
             Span::raw("  "),
             Span::styled(format!("{} pi", pi_spinner), theme.pi_working),
         ],
+        Some(PiIndicator::Retrying) => vec![
+            Span::raw("  "),
+            Span::styled("↻ pi".to_string(), theme.pi_warning),
+        ],
         Some(PiIndicator::Done) => vec![
             Span::raw("  "),
             Span::styled("✓ pi".to_string(), theme.pi_done),
+        ],
+        Some(PiIndicator::Cancelled) => vec![
+            Span::raw("  "),
+            Span::styled("■ pi".to_string(), theme.pi_warning),
+        ],
+        Some(PiIndicator::Incomplete) => vec![
+            Span::raw("  "),
+            Span::styled("… pi".to_string(), theme.pi_warning),
+        ],
+        Some(PiIndicator::Failed) => vec![
+            Span::raw("  "),
+            Span::styled("! pi".to_string(), theme.pi_failed),
         ],
         None => Vec::new(),
     }
@@ -218,8 +233,20 @@ fn build_thread_item<'a>(
                             Some(PiIndicator::Working) => {
                                 spans.push(Span::styled(format!("{} ", pi_spinner), theme.pi_working));
                             }
+                            Some(PiIndicator::Retrying) => {
+                                spans.push(Span::styled("↻ ".to_string(), theme.pi_warning));
+                            }
                             Some(PiIndicator::Done) => {
                                 spans.push(Span::styled("✓ ".to_string(), theme.pi_done));
+                            }
+                            Some(PiIndicator::Cancelled) => {
+                                spans.push(Span::styled("■ ".to_string(), theme.pi_warning));
+                            }
+                            Some(PiIndicator::Incomplete) => {
+                                spans.push(Span::styled("… ".to_string(), theme.pi_warning));
+                            }
+                            Some(PiIndicator::Failed) => {
+                                spans.push(Span::styled("! ".to_string(), theme.pi_failed));
                             }
                             None => {}
                         }

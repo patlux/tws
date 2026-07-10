@@ -16,10 +16,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub enum PiWorkState {
     /// Pi is currently streaming/working on a prompt.
     Working,
+    /// Pi is waiting for an automatic retry or recovery.
+    Retrying,
     /// Pi started but has not worked yet (fresh session).
     Idle,
-    /// Pi finished its last prompt.
+    /// Pi finished its last prompt successfully.
     Done,
+    /// Pi's last prompt was explicitly aborted.
+    Cancelled,
+    /// Pi's last prompt ended incomplete, for example at the token limit.
+    Incomplete,
+    /// Pi's last prompt ended with a technical error.
+    Failed,
     /// Pi exited cleanly.
     Shutdown,
     /// Unrecognized state string (forward compatibility).
@@ -30,8 +38,12 @@ impl PiWorkState {
     fn parse(s: &str) -> Self {
         match s {
             "working" => PiWorkState::Working,
+            "retrying" => PiWorkState::Retrying,
             "idle" => PiWorkState::Idle,
             "done" => PiWorkState::Done,
+            "cancelled" | "canceled" | "aborted" => PiWorkState::Cancelled,
+            "incomplete" | "length" => PiWorkState::Incomplete,
+            "failed" | "error" => PiWorkState::Failed,
             "shutdown" => PiWorkState::Shutdown,
             _ => PiWorkState::Unknown,
         }
@@ -43,8 +55,16 @@ impl PiWorkState {
 pub enum PiIndicator {
     /// Show a spinner — Pi is working right now.
     Working,
-    /// Show a checkmark — Pi finished.
+    /// Show a retry marker — Pi may continue automatically.
+    Retrying,
+    /// Show a checkmark — Pi finished successfully.
     Done,
+    /// Show a stop marker — the user aborted the prompt.
+    Cancelled,
+    /// Show an incomplete marker — the response stopped before completion.
+    Incomplete,
+    /// Show an error marker — Pi hit a technical failure.
+    Failed,
 }
 
 /// One parsed status file.
@@ -116,8 +136,8 @@ fn now_ms() -> u64 {
 /// Load all statuses and prune stale files in a single directory pass.
 ///
 /// Files whose pane is no longer live and whose last update is older than
-/// `max_age` are deleted and excluded from the result. Recent "done" markers
-/// stay visible even after the Pi process exited.
+/// `max_age` are deleted and excluded from the result. Recent terminal markers
+/// (`done`/`cancelled`/`incomplete`/`failed`) stay visible even after the Pi process exited.
 pub fn load_and_prune(dir: &Path, live_pane_ids: &HashSet<String>, max_age: Duration) -> Vec<PiStatus> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -185,6 +205,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_terminal_and_retry_states() {
+        for (state, expected) in [
+            ("retrying", PiWorkState::Retrying),
+            ("cancelled", PiWorkState::Cancelled),
+            ("canceled", PiWorkState::Cancelled),
+            ("aborted", PiWorkState::Cancelled),
+            ("incomplete", PiWorkState::Incomplete),
+            ("length", PiWorkState::Incomplete),
+            ("failed", PiWorkState::Failed),
+            ("error", PiWorkState::Failed),
+        ] {
+            let s = parse_status(&status_json("%3", "tws_a_b", state, 5)).unwrap();
+            assert_eq!(s.work_state, expected);
+        }
+    }
+
+    #[test]
     fn parse_unknown_state_is_forward_compatible() {
         let s = parse_status(&status_json("%1", "tws_x", "compacting", 1)).unwrap();
         assert_eq!(s.work_state, PiWorkState::Unknown);
@@ -220,7 +257,7 @@ mod tests {
         let now = now_ms();
         // Live pane, ancient status → kept.
         std::fs::write(dir.join("live.json"), status_json("%1", "tws_x", "working", 0)).unwrap();
-        // Dead pane, fresh status → kept (recent "done" marker).
+        // Dead pane, fresh status → kept (recent terminal marker).
         std::fs::write(dir.join("fresh.json"), status_json("%2", "tws_x", "done", now)).unwrap();
         // Dead pane, ancient status → removed.
         std::fs::write(dir.join("stale.json"), status_json("%3", "tws_x", "done", 0)).unwrap();
