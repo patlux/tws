@@ -169,7 +169,13 @@ impl App {
                 let marked_sessions = &self.marked_sessions;
                 let is_marked = |session_name: &str| marked_sessions.contains(session_name);
                 let pi_spinner = self.pi_spinner_frame();
-                let items = tree_view::build_tree_items(&self.state, &self.theme, &deleting_label, pi_spinner);
+                let items = tree_view::build_tree_items(
+                    &self.state,
+                    &self.tree_state,
+                    &self.theme,
+                    &deleting_label,
+                    pi_spinner,
+                );
                 if items.is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);
                     let content_height = 4u16;

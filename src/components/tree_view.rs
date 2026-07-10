@@ -15,6 +15,7 @@ use crate::theme::Theme;
 /// Root threads (from the root collection) render at root level, not nested under a collection node.
 pub fn build_tree_items<'a>(
     state: &'a AppState,
+    tree_state: &TreeState<String>,
     theme: &Theme,
     deleting_label: &dyn Fn(&str) -> Option<String>,
     pi_spinner: &str,
@@ -26,18 +27,38 @@ pub fn build_tree_items<'a>(
         if col.is_root || state.collection_is_hidden(col_idx) {
             continue;
         }
+        let collection_path = vec![col.id.to_string()];
         let children: Vec<TreeItem<'a, String>> = col
             .threads
             .iter()
             .enumerate()
             .filter(|(thread_idx, _)| !state.thread_is_hidden(col_idx, *thread_idx))
-            .map(|(_, thread)| build_thread_item(state, thread, theme, deleting_label, pi_spinner))
+            .map(|(_, thread)| {
+                let mut thread_path = collection_path.clone();
+                thread_path.push(thread.id.to_string());
+                build_thread_item(
+                    state,
+                    tree_state,
+                    thread,
+                    &thread_path,
+                    theme,
+                    deleting_label,
+                    pi_spinner,
+                )
+            })
             .collect();
 
         items.push(
             TreeItem::new(
                 col.id.to_string(),
-                collection_text(state, col_idx, col.name.as_str(), theme, pi_spinner),
+                collection_text(
+                    state,
+                    col_idx,
+                    col.name.as_str(),
+                    !should_show_parent_indicator(tree_state, &collection_path),
+                    theme,
+                    pi_spinner,
+                ),
                 children,
             )
             .expect("thread IDs are unique within a collection"),
@@ -51,7 +72,16 @@ pub fn build_tree_items<'a>(
         }
         for (thread_idx, thread) in col.threads.iter().enumerate() {
             if !state.thread_is_hidden(col_idx, thread_idx) {
-                items.push(build_thread_item(state, thread, theme, deleting_label, pi_spinner));
+                let thread_path = vec![thread.id.to_string()];
+                items.push(build_thread_item(
+                    state,
+                    tree_state,
+                    thread,
+                    &thread_path,
+                    theme,
+                    deleting_label,
+                    pi_spinner,
+                ));
             }
         }
     }
@@ -180,25 +210,34 @@ fn pi_indicator_suffix(
     }
 }
 
+fn should_show_parent_indicator(tree_state: &TreeState<String>, path: &[String]) -> bool {
+    !tree_state.opened().contains(path)
+}
+
 fn collection_text(
     state: &AppState,
     col_idx: usize,
     name: &str,
+    is_expanded: bool,
     theme: &Theme,
     pi_spinner: &str,
 ) -> Text<'static> {
     let mut spans = vec![Span::styled(name.to_string(), theme.collection)];
-    spans.extend(pi_indicator_suffix(
-        state.pi_indicator_for_collection(col_idx),
-        theme,
-        pi_spinner,
-    ));
+    if !is_expanded {
+        spans.extend(pi_indicator_suffix(
+            state.pi_indicator_for_collection(col_idx),
+            theme,
+            pi_spinner,
+        ));
+    }
     Text::from(Line::from(spans))
 }
 
 fn build_thread_item<'a>(
     state: &'a AppState,
+    tree_state: &TreeState<String>,
     thread: &'a Thread,
+    thread_path: &[String],
     theme: &Theme,
     deleting_label: &dyn Fn(&str) -> Option<String>,
     pi_spinner: &str,
@@ -214,7 +253,9 @@ fn build_thread_item<'a>(
             let display_name = deleting.unwrap_or_else(|| s.display_name.clone());
             let style = if is_deleting { theme.worktree_meta } else { theme.session };
             let mut spans = vec![Span::styled(display_name, style)];
-            if !is_deleting {
+            let mut session_path = thread_path.to_vec();
+            session_path.push(s.tmux_session_name.clone());
+            if !is_deleting && should_show_parent_indicator(tree_state, &session_path) {
                 spans.extend(pi_indicator_suffix(
                     state.pi_indicator_for_session(&s.tmux_session_name),
                     theme,
@@ -302,11 +343,13 @@ fn build_thread_item<'a>(
             Span::styled(" \u{25CF} ", theme.badge_dot),
             Span::styled(session_count.to_string(), theme.badge_count),
         ];
-        spans.extend(pi_indicator_suffix(
-            state.pi_indicator_for_thread(thread.id),
-            theme,
-            pi_spinner,
-        ));
+        if should_show_parent_indicator(tree_state, thread_path) {
+            spans.extend(pi_indicator_suffix(
+                state.pi_indicator_for_thread(thread.id),
+                theme,
+                pi_spinner,
+            ));
+        }
         Text::from(Line::from(spans))
     } else {
         // No sessions means no Pi status to report on this thread row.
@@ -331,4 +374,27 @@ fn branch_display_name(branch: &str) -> String {
 
 fn short_head(head: &str) -> String {
     head.chars().take(8).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_show_parent_indicator;
+    use tui_tree_widget::TreeState;
+
+    #[test]
+    fn pi_indicator_stays_on_collapsed_parent() {
+        let tree_state = TreeState::default();
+        let path = vec!["collection".to_string()];
+
+        assert!(should_show_parent_indicator(&tree_state, &path));
+    }
+
+    #[test]
+    fn pi_indicator_moves_below_expanded_parent() {
+        let mut tree_state = TreeState::default();
+        let path = vec!["collection".to_string(), "thread".to_string()];
+        tree_state.open(path.clone());
+
+        assert!(!should_show_parent_indicator(&tree_state, &path));
+    }
 }
