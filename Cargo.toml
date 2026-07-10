@@ -1,12 +1,23 @@
-[package]
-name = "tws"
+[workspace]
+members = [".", "crates/tws-core", "crates/tws-mux"]
+resolver = "2"
+
+[workspace.package]
 version = "1.1.5"
 edition = "2024"
-description = "tmux workspace manager — organize sessions into collections and threads"
 authors = ["Yusuf Taskiran"]
 license = "MIT"
 repository = "https://github.com/ytaskiran/tws"
-keywords = ["tmux", "terminal", "tui", "workspace"]
+
+[package]
+name = "tws"
+version.workspace = true
+edition.workspace = true
+description = "terminal workspace manager for tmux and Zellij"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["tmux", "zellij", "terminal", "tui", "workspace"]
 categories = ["command-line-utilities"]
 
 [dependencies]
@@ -20,4 +31,6 @@ ansi-to-tui = "8"
 tui-markdown = { version = "0.3.7", default-features = false }
 tui-tree-widget = "0.24.0"
 toml = "0.8"
+tws-core = { path = "crates/tws-core" }
+tws-mux = { path = "crates/tws-mux" }
 uuid = { version = "1.21.0", features = ["v4", "serde"] }

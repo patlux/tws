@@ -1,10 +1,12 @@
 use uuid::Uuid;
 
-use super::model::{AgentSession, AgentType, Collection, Thread, Session, WorktreeSession, tmux_session_name_labeled, tmux_session_prefix, tmux_root_session_name_labeled, tmux_root_session_prefix};
+use super::model::{AgentSession, AgentType, Collection, Thread, Session, WorktreeSession};
 use super::pi_status::{PiIndicator, PiStatus, PiWorkState};
+use crate::naming::BackendKind;
 
 pub struct AppState {
     pub collections: Vec<Collection>,
+    pub backend: BackendKind,
     /// Runtime-only: live tmux sessions managed by tws. Never persisted.
     pub active_sessions: Vec<Session>,
     /// Runtime-only: Git worktrees that can be launched as tws sessions. Never persisted.
@@ -56,6 +58,18 @@ pub enum SelectedItem {
 }
 
 impl AppState {
+    pub fn empty(backend: BackendKind) -> Self {
+        Self {
+            collections: Vec::new(),
+            backend,
+            active_sessions: Vec::new(),
+            worktree_sessions: Vec::new(),
+            agent_sessions: Vec::new(),
+            pi_statuses: Vec::new(),
+            active_filter: false,
+        }
+    }
+
     /// Resolve a tree selection path (from TreeState::selected()) to a SelectedItem.
     ///
     /// Path lengths:
@@ -339,9 +353,9 @@ impl AppState {
         let col = self.collections.get(col_idx)?;
         let thread = col.threads.get(thread_idx)?;
         if col.is_root {
-            Some(tmux_root_session_name_labeled(&thread.name, label))
+            Some(self.backend.root_name(&thread.name, label))
         } else {
-            Some(tmux_session_name_labeled(&col.name, &thread.name, label))
+            Some(self.backend.regular_name(&col.name, &thread.name, label))
         }
     }
 
@@ -623,9 +637,9 @@ impl AppState {
         for col in &self.collections {
             for thread in &col.threads {
                 let prefix = if col.is_root {
-                    tmux_root_session_prefix(&thread.name)
+                    self.backend.root_prefix(&thread.name)
                 } else {
-                    tmux_session_prefix(&col.name, &thread.name)
+                    self.backend.regular_prefix(&col.name, &thread.name)
                 };
                 for (session_name, last_attached) in live_tmux_sessions {
                     // Match "prefix_label" where label is any non-empty suffix
@@ -861,17 +875,16 @@ fn short_branch_name(branch: &str) -> &str {
         .unwrap_or(branch)
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::empty(BackendKind::Tmux)
+    }
+}
+
 #[cfg(test)]
 impl AppState {
     pub fn new() -> Self {
-        Self {
-            collections: Vec::new(),
-            active_sessions: Vec::new(),
-            worktree_sessions: Vec::new(),
-            agent_sessions: Vec::new(),
-            pi_statuses: Vec::new(),
-            active_filter: false,
-        }
+        Self::default()
     }
 
     /// Creates sample data for development/testing.
@@ -893,6 +906,7 @@ impl AppState {
 
         Self {
             collections: vec![work, learning, podcast, personal],
+            backend: BackendKind::Tmux,
             active_sessions: Vec::new(),
             worktree_sessions: Vec::new(),
             agent_sessions: Vec::new(),
@@ -906,9 +920,9 @@ impl AppState {
         let col = self.collections.get(col_idx)?;
         let thread = col.threads.get(thread_idx)?;
         if col.is_root {
-            Some(tmux_root_session_prefix(&thread.name))
+            Some(self.backend.root_prefix(&thread.name))
         } else {
-            Some(tmux_session_prefix(&col.name, &thread.name))
+            Some(self.backend.regular_prefix(&col.name, &thread.name))
         }
     }
 }
@@ -1031,6 +1045,26 @@ mod tests {
         state.active_filter = false;
         assert!(!state.thread_is_hidden(0, 1));
         assert!(!state.collection_is_hidden(1));
+    }
+
+    #[test]
+    fn zellij_backend_discovers_zellij_names_only() {
+        let mut state = AppState::with_sample_data();
+        state.backend = BackendKind::Zellij;
+        state.refresh_sessions(&[
+            ("twz_work_edge-device-pipeline_main".into(), 42),
+            ("tws_work_edge-device-pipeline_tmux".into(), 99),
+        ]);
+
+        assert_eq!(state.active_sessions.len(), 1);
+        assert_eq!(
+            state.active_sessions[0].tmux_session_name,
+            "twz_work_edge-device-pipeline_main"
+        );
+        assert_eq!(
+            state.make_session_name(0, 0, "feature"),
+            Some("twz_work_edge-device-pipeline_feature".into())
+        );
     }
 
     #[test]
@@ -1646,7 +1680,7 @@ mod tests {
         let live = vec![("tws_work_edge-device-pipeline_one".to_string(), 0)];
         state.refresh_sessions(&live);
 
-        use crate::core::model::{AgentSession, AgentType};
+        use crate::model::{AgentSession, AgentType};
         let mk = |id: &str, slot: Option<u8>| AgentSession {
             agent_type: AgentType::ClaudeCode,
             tmux_session_name: "tws_work_edge-device-pipeline_one".into(),
@@ -1668,7 +1702,7 @@ mod tests {
 
     #[test]
     fn pin_slot_survives_agent_list_rebuild() {
-        use crate::core::model::{AgentSession, AgentType};
+        use crate::model::{AgentSession, AgentType};
         let mut state = AppState::new();
         state.agent_sessions.push(AgentSession {
             agent_type: AgentType::ClaudeCode,

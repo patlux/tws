@@ -371,8 +371,7 @@ impl App {
             Some(Action::Enter) => {
                 if let Some(a) = agents.get(self.agent_list_cursor) {
                     let session_name = a.tmux_session_name.clone();
-                    let _ = tmux::select_window(&session_name, a.window_index);
-                    let _ = tmux::select_pane(&a.pane_id);
+                    let _ = mux::focus_pane(&session_name, a.window_index, &a.pane_id);
                     self.attach_to_session(&session_name, terminal)?;
                 }
             }
@@ -903,8 +902,7 @@ impl App {
                     let session_name = agent.tmux_session_name.clone();
                     let window_index = agent.window_index;
                     let pane_id = agent.pane_id.clone();
-                    let _ = tmux::select_window(&session_name, window_index);
-                    let _ = tmux::select_pane(&pane_id);
+                    let _ = mux::focus_pane(&session_name, window_index, &pane_id);
                     self.attach_to_session(&session_name, terminal)?;
                 }
             }
@@ -1079,7 +1077,7 @@ impl App {
                 let dest_thread: usize = match parts[1].parse() { Ok(v) => v, Err(_) => return };
 
                 if let Some(new_tmux_name) = self.state.make_session_name(dest_col, dest_thread, &session_label) {
-                    if let Err(err) = tmux::rename_session(&session_name, &new_tmux_name) {
+                    if let Err(err) = mux::rename_session(&session_name, &new_tmux_name) {
                         self.set_error(format!("Failed to move session: {}", err));
                         return;
                     }
@@ -1229,7 +1227,7 @@ impl App {
                     let mut rename_errors = Vec::new();
                     for (old_name, label, thread_idx) in &old_sessions {
                         if let Some(new_name) = self.state.make_session_name(idx, *thread_idx, label) {
-                            match tmux::rename_session(old_name, &new_name) {
+                            match mux::rename_session(old_name, &new_name) {
                                 Ok(()) => {
                                     self.notes.rename(old_name, &new_name);
                                     if self.marked_sessions.remove(old_name) {
@@ -1263,7 +1261,7 @@ impl App {
                     let mut rename_errors = Vec::new();
                     for (old_name, label) in &old_sessions {
                         if let Some(new_name) = self.state.make_session_name(col_idx, thread_idx, label) {
-                            match tmux::rename_session(old_name, &new_name) {
+                            match mux::rename_session(old_name, &new_name) {
                                 Ok(()) => {
                                     self.notes.rename(old_name, &new_name);
                                     if self.marked_sessions.remove(old_name) {
@@ -1326,7 +1324,7 @@ impl App {
                 }
                 InputPurpose::RenameSession { col_idx, thread_idx, old_tmux_name } => {
                     if let Some(new_tmux_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
-                        match tmux::rename_session(&old_tmux_name, &new_tmux_name) {
+                        match mux::rename_session(&old_tmux_name, &new_tmux_name) {
                             Ok(()) => {
                                 self.notes.rename(&old_tmux_name, &new_tmux_name);
                                 if self.marked_sessions.remove(&old_tmux_name) {
@@ -1376,7 +1374,7 @@ impl App {
                     }
                     let mut kill_errors = Vec::new();
                     for name in &session_names {
-                        if let Err(err) = tmux::kill_session(name) {
+                        if let Err(err) = mux::kill_session(name) {
                             kill_errors.push(format!("{}: {}", name, err));
                         }
                         self.marked_sessions.remove(name);
@@ -1413,7 +1411,7 @@ impl App {
                         .collect();
                     let mut kill_errors = Vec::new();
                     for name in session_names {
-                        if let Err(err) = tmux::kill_session(&name) {
+                        if let Err(err) = mux::kill_session(&name) {
                             kill_errors.push(format!("{}: {}", name, err));
                         }
                         self.marked_sessions.remove(&name);
@@ -1438,7 +1436,7 @@ impl App {
                     self.sync_note_editor();
                 }
                 ConfirmPurpose::KillSession { session_name } => {
-                    if let Err(err) = tmux::kill_session(&session_name) {
+                    if let Err(err) = mux::kill_session(&session_name) {
                         self.set_error(format!("Failed to kill session: {}", err));
                         return;
                     }
@@ -1469,7 +1467,7 @@ impl App {
                         .collect();
                     let mut kill_errors = Vec::new();
                     for name in &names {
-                        if let Err(err) = tmux::kill_session(name) {
+                        if let Err(err) = mux::kill_session(name) {
                             kill_errors.push(format!("{}: {}", name, err));
                         }
                         self.marked_sessions.remove(name);
@@ -1496,7 +1494,7 @@ impl App {
                     let count = session_names.len();
                     let mut kill_errors = Vec::new();
                     for name in &session_names {
-                        if let Err(err) = tmux::kill_session(name) {
+                        if let Err(err) = mux::kill_session(name) {
                             kill_errors.push(format!("{}: {}", name, err));
                         }
                     }
@@ -1526,7 +1524,7 @@ impl App {
                     std::thread::spawn(move || {
                         let result = worktrees::remove(&repo, &path);
                         if result.is_ok() && kill_session {
-                            let _ = tmux::kill_session(&tmux_session_name);
+                            let _ = mux::kill_session(&tmux_session_name);
                         }
                         let _ = tx.send(WorktreeDeleteResult {
                             tmux_session_name,
@@ -1583,7 +1581,7 @@ impl App {
 
     /// Launch a new tmux session with the given name and attach to it.
     pub(super) fn launch_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
-        if let Err(err) = tmux::new_session(session_name) {
+        if let Err(err) = mux::new_session(session_name) {
             self.set_error(format!("Failed to create session: {}", err));
             return Ok(());
         }
@@ -1592,7 +1590,7 @@ impl App {
 
     /// Launch a new tmux session in a worktree directory and attach to it.
     pub(super) fn launch_session_in_dir(&mut self, session_name: &str, cwd: PathBuf, terminal: &mut Tui) -> std::io::Result<()> {
-        if let Err(err) = tmux::new_session_in_dir(session_name, &cwd) {
+        if let Err(err) = mux::new_session_in_dir(session_name, &cwd) {
             self.set_error(format!("Failed to create session: {}", err));
             return Ok(());
         }
@@ -1617,8 +1615,8 @@ impl App {
 
     /// Attach or switch to a tmux session by name.
     pub(super) fn attach_to_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
-        if tmux::is_inside_tmux() {
-            match tmux::switch_client(session_name) {
+        if mux::is_inside() {
+            match mux::switch_client(session_name) {
                 Ok(()) => self.running = false,
                 Err(err) => {
                     self.set_error(format!("Failed to switch to session: {}", err));
@@ -1628,7 +1626,7 @@ impl App {
         } else {
             // Outside tmux: suspend TUI, attach (blocks), then resume TUI
             tui::restore()?;
-            let _ = tmux::attach_session(session_name);
+            let _ = mux::attach_session(session_name);
             *terminal = tui::init()?;
         }
 

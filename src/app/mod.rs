@@ -24,8 +24,7 @@ use crate::config::{self, StartDirConfig, WorktreeConfig};
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::git::worktrees::{self, DiscoverOptions};
 use crate::theme::{Theme, NoteStyleSheet};
-use crate::tmux::agent_scan;
-use crate::tmux::commands as tmux;
+use tws_mux as mux;
 use crate::tui::{self, Tui};
 
 mod draw;
@@ -342,7 +341,7 @@ pub struct App {
     last_width: u16,
 }
 
-/// How often to poll tmux for session changes (seconds).
+/// How often to poll the active multiplexer for session changes (seconds).
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How long cached worktree discoveries stay valid for the synchronous

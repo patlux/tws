@@ -1,18 +1,18 @@
 use std::io::{self, Write};
 
-use crate::core::model::{Collection, Thread, tmux_session_name_labeled};
+use crate::core::model::{Collection, Thread};
 use crate::core::persistence;
-use crate::tmux::commands as tmux;
+use tws_mux as mux;
 
 pub fn run() -> io::Result<()> {
-    let all_sessions = tmux::list_sessions();
+    let all_sessions = mux::list_sessions();
     let unmanaged: Vec<&String> = all_sessions
         .iter()
-        .filter(|name| !name.starts_with("tws_") && !name.starts_with("twsr_"))
+        .filter(|name| !mux::is_managed_name(name))
         .collect();
 
     if unmanaged.is_empty() {
-        println!("No unmanaged tmux sessions found.");
+        println!("No unmanaged {} sessions found.", mux::name());
         return Ok(());
     }
 
@@ -93,7 +93,7 @@ pub fn run() -> io::Result<()> {
 
         let col_name = &collections[col_idx].name;
         let thread_name = &collections[col_idx].threads[thread_idx].name;
-        let new_name = tmux_session_name_labeled(col_name, thread_name, &label);
+        let new_name = mux::regular_name(col_name, thread_name, &label);
 
         println!(
             "\n  Rename: \"{}\" → \"{}\"\n",
@@ -101,7 +101,7 @@ pub fn run() -> io::Result<()> {
         );
 
         if confirm("  Proceed?")? {
-            match tmux::rename_session(session_name, &new_name) {
+            match mux::rename_session(session_name, &new_name) {
                 Ok(()) => {
                     println!("  Renamed successfully.\n");
                     if created_col || created_thread_in.is_some() {

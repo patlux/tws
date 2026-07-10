@@ -5,7 +5,6 @@ mod event;
 mod git;
 mod import;
 mod theme;
-mod tmux;
 mod config;
 mod tui;
 
@@ -13,31 +12,39 @@ use app::App;
 use clap::{Parser, Subcommand};
 use core::persistence;
 use core::state::AppState;
+use tws_mux as mux;
 
 #[derive(Parser)]
-#[command(name = "tws", about = "tmux workspace manager", version)]
+#[command(name = "tws", about = "tmux and Zellij workspace manager", version)]
 struct Cli {
+    /// Multiplexer backend. Defaults to TWS_BACKEND or tmux.
+    #[arg(long, value_name = "tmux|zellij")]
+    backend: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Import existing tmux sessions into tws
+    /// Import existing sessions from the selected backend into tws
     Import,
 }
 
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
 
-    if std::process::Command::new("tmux")
-        .arg("-V")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_err()
-    {
-        eprintln!("tws: tmux not found on PATH — install tmux first");
+    if let Some(backend) = cli.backend.as_deref()
+        && let Err(error) = mux::configure(backend) {
+            eprintln!("tws: {error}");
+            std::process::exit(2);
+        }
+    if let Err(error) = mux::configure_config_dir(persistence::config_dir()) {
+        eprintln!("tws: {error}");
+        std::process::exit(2);
+    }
+    if let Err(error) = mux::ensure_available() {
+        eprintln!("tws: {error}");
         std::process::exit(1);
     }
 
@@ -52,7 +59,10 @@ fn run_tui() -> std::io::Result<()> {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
             eprintln!("tws: state.json is corrupted: {}", e);
-            eprintln!("tws: fix or remove ~/.config/tws/state.json to start fresh");
+            eprintln!(
+                "tws: fix or remove {}/state.json to start fresh",
+                persistence::config_dir().display()
+            );
             std::process::exit(1);
         }
         Err(e) => return Err(e),
@@ -60,6 +70,7 @@ fn run_tui() -> std::io::Result<()> {
     let ui_state = persistence::load_ui();
     let state = AppState {
         collections,
+        backend: mux::backend(),
         active_sessions: Vec::new(),
         worktree_sessions: Vec::new(),
         agent_sessions: Vec::new(),

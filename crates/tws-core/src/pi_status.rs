@@ -11,6 +11,11 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::naming::BackendKind;
+
+/// Static marker shown while Pi is actively working.
+pub const WORKING_INDICATOR: &str = "●";
+
 /// Work state reported by the Pi extension for a single pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PiWorkState {
@@ -53,7 +58,7 @@ impl PiWorkState {
 /// What the UI should show for a Pi agent or its session row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PiIndicator {
-    /// Show a spinner — Pi is working right now.
+    /// Show the active-work marker — Pi is working right now.
     Working,
     /// Show a retry marker — Pi may continue automatically.
     Retrying,
@@ -80,6 +85,8 @@ pub struct PiStatus {
 #[derive(serde::Deserialize)]
 struct RawStatus {
     #[serde(default)]
+    backend: String,
+    #[serde(default)]
     pane_id: String,
     #[serde(default)]
     tmux_session_name: String,
@@ -91,9 +98,12 @@ struct RawStatus {
 
 /// Parse a single status file's contents. Returns `None` for invalid JSON
 /// or files without a pane id.
-pub fn parse_status(data: &str) -> Option<PiStatus> {
+pub fn parse_status(data: &str, backend: BackendKind) -> Option<PiStatus> {
     let raw: RawStatus = serde_json::from_str(data).ok()?;
     if raw.pane_id.is_empty() {
+        return None;
+    }
+    if !raw.backend.is_empty() && raw.backend != backend.name() {
         return None;
     }
     Some(PiStatus {
@@ -107,7 +117,7 @@ pub fn parse_status(data: &str) -> Option<PiStatus> {
 /// Load all status files from `dir`. Missing directory or unreadable/invalid
 /// files simply yield fewer results.
 #[cfg(test)]
-pub fn load_all(dir: &Path) -> Vec<PiStatus> {
+pub fn load_all(dir: &Path, backend: BackendKind) -> Vec<PiStatus> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),
@@ -119,7 +129,7 @@ pub fn load_all(dir: &Path) -> Vec<PiStatus> {
             continue;
         }
         if let Ok(data) = std::fs::read_to_string(&path)
-            && let Some(status) = parse_status(&data) {
+            && let Some(status) = parse_status(&data, backend) {
                 result.push(status);
             }
     }
@@ -138,7 +148,12 @@ fn now_ms() -> u64 {
 /// Files whose pane is no longer live and whose last update is older than
 /// `max_age` are deleted and excluded from the result. Recent terminal markers
 /// (`done`/`cancelled`/`incomplete`/`failed`) stay visible even after the Pi process exited.
-pub fn load_and_prune(dir: &Path, live_pane_ids: &HashSet<String>, max_age: Duration) -> Vec<PiStatus> {
+pub fn load_and_prune(
+    dir: &Path,
+    live_pane_ids: &HashSet<String>,
+    max_age: Duration,
+    backend: BackendKind,
+) -> Vec<PiStatus> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),
@@ -154,7 +169,7 @@ pub fn load_and_prune(dir: &Path, live_pane_ids: &HashSet<String>, max_age: Dura
         let Ok(data) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Some(status) = parse_status(&data) else {
+        let Some(status) = parse_status(&data, backend) else {
             continue;
         };
         if !live_pane_ids.contains(&status.pane_id)
@@ -189,7 +204,7 @@ mod tests {
 
     #[test]
     fn parse_valid_status() {
-        let s = parse_status(&status_json("%12", "tws_work_proj", "working", 1000)).unwrap();
+        let s = parse_status(&status_json("%12", "tws_work_proj", "working", 1000), BackendKind::Tmux).unwrap();
         assert_eq!(s.pane_id, "%12");
         assert_eq!(s.tmux_session_name, "tws_work_proj");
         assert_eq!(s.work_state, PiWorkState::Working);
@@ -199,7 +214,7 @@ mod tests {
     #[test]
     fn parse_done_ignores_extra_fields() {
         let json = r#"{"pane_id":"%3","tmux_session_name":"tws_a_b","state":"done","updated_at_ms":5,"finished_at_ms":5,"session_name":"Fix tests"}"#;
-        let s = parse_status(json).unwrap();
+        let s = parse_status(json, BackendKind::Tmux).unwrap();
         assert_eq!(s.work_state, PiWorkState::Done);
         assert_eq!(s.updated_at_ms, 5);
     }
@@ -216,21 +231,27 @@ mod tests {
             ("failed", PiWorkState::Failed),
             ("error", PiWorkState::Failed),
         ] {
-            let s = parse_status(&status_json("%3", "tws_a_b", state, 5)).unwrap();
+            let s = parse_status(&status_json("%3", "tws_a_b", state, 5), BackendKind::Tmux).unwrap();
             assert_eq!(s.work_state, expected);
         }
     }
 
     #[test]
+    fn parse_rejects_status_for_another_backend() {
+        let json = r#"{"backend":"zellij","pane_id":"terminal_1","tmux_session_name":"twz_x_y_main","state":"working","updated_at_ms":1}"#;
+        assert!(parse_status(json, BackendKind::Tmux).is_none());
+    }
+
+    #[test]
     fn parse_unknown_state_is_forward_compatible() {
-        let s = parse_status(&status_json("%1", "tws_x", "compacting", 1)).unwrap();
+        let s = parse_status(&status_json("%1", "tws_x", "compacting", 1), BackendKind::Tmux).unwrap();
         assert_eq!(s.work_state, PiWorkState::Unknown);
     }
 
     #[test]
     fn parse_rejects_invalid_json_and_missing_pane() {
-        assert!(parse_status("not json").is_none());
-        assert!(parse_status(r#"{"state":"working"}"#).is_none());
+        assert!(parse_status("not json", BackendKind::Tmux).is_none());
+        assert!(parse_status(r#"{"state":"working"}"#, BackendKind::Tmux).is_none());
     }
 
     #[test]
@@ -240,7 +261,7 @@ mod tests {
         std::fs::write(dir.join("b.json"), "garbage").unwrap();
         std::fs::write(dir.join("c.txt"), status_json("%2", "tws_x", "done", 1)).unwrap();
 
-        let all = load_all(&dir);
+        let all = load_all(&dir, BackendKind::Tmux);
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].pane_id, "%1");
         let _ = std::fs::remove_dir_all(&dir);
@@ -248,7 +269,7 @@ mod tests {
 
     #[test]
     fn load_all_missing_dir_is_empty() {
-        assert!(load_all(Path::new("/nonexistent/tws-pi-status")).is_empty());
+        assert!(load_all(Path::new("/nonexistent/tws-pi-status"), BackendKind::Tmux).is_empty());
     }
 
     #[test]
@@ -263,7 +284,12 @@ mod tests {
         std::fs::write(dir.join("stale.json"), status_json("%3", "tws_x", "done", 0)).unwrap();
 
         let live: HashSet<String> = ["%1".to_string()].into_iter().collect();
-        let loaded = load_and_prune(&dir, &live, Duration::from_secs(60 * 60));
+        let loaded = load_and_prune(
+            &dir,
+            &live,
+            Duration::from_secs(60 * 60),
+            BackendKind::Tmux,
+        );
 
         let panes: Vec<&str> = loaded.iter().map(|s| s.pane_id.as_str()).collect();
         assert!(panes.contains(&"%1"));

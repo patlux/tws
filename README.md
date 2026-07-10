@@ -141,7 +141,8 @@ Already have tmux sessions running? `tws import` walks you through assigning the
 
 ## Requirements
 
-- **[tmux](https://github.com/tmux/tmux)** — required. tws manages tmux sessions; it does nothing without it.
+- **[tmux](https://github.com/tmux/tmux)** — required for the default backend.
+- **[Zellij](https://zellij.dev)** 0.44.3 or newer — required for `--backend zellij` (structured pane inspection and targeted session switching).
 - **[glow](https://github.com/charmbracelet/glow)** — optional, for rich markdown rendering in the notes panel. Falls back to basic rendering if absent.
 
 ## Install
@@ -189,9 +190,13 @@ xattr -dr com.apple.quarantine ~/.local/bin/tws
 ## Usage
 
 ```sh
-tws          # launch the TUI
-tws import   # interactively import existing unmanaged tmux sessions
+tws                         # launch the default tmux edition
+tws import                  # import unmanaged tmux sessions
+tws --backend zellij        # launch the isolated Zellij edition
+tws --backend zellij import # import unmanaged Zellij sessions
 ```
+
+The backend can also be selected with `TWS_BACKEND=tmux|zellij`. Set an absolute `TWS_CONFIG_DIR` to isolate state, notes, UI state, locks, Pi status files, and recency data. Managed tmux sessions keep the `tws_`/`twsr_` prefixes; Zellij uses `twz_`/`twzr_`, so both editions can run concurrently.
 
 The status bar shows context-aware key hints for whatever is selected. The essentials:
 

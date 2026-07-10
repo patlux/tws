@@ -71,6 +71,13 @@ fn ensure_config_dir() -> io::Result<PathBuf> {
 }
 
 pub(crate) fn config_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("TWS_CONFIG_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return path;
+    }
+
     // Respect XDG_CONFIG_HOME when set; fall back to ~/.config (the historic
     // location on all platforms), then to a relative path if home is unknown.
     let base = std::env::var_os("XDG_CONFIG_HOME")

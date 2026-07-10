@@ -152,12 +152,14 @@ pub fn slugify(s: &str) -> String {
 
 /// Generates the base prefix for root thread tmux sessions.
 /// Format: `twsr_{thread_slug}`
+#[cfg(test)]
 pub fn tmux_root_session_prefix(thread_name: &str) -> String {
     format!("twsr_{}", slugify(thread_name))
 }
 
 /// Generates a labeled tmux session name for a root thread.
 /// Format: `twsr_{thread_slug}_{label_slug}`
+#[cfg(test)]
 pub fn tmux_root_session_name_labeled(thread_name: &str, label: &str) -> String {
     format!("{}_{}", tmux_root_session_prefix(thread_name), slugify(label))
 }
@@ -166,12 +168,14 @@ pub fn tmux_root_session_name_labeled(thread_name: &str, label: &str) -> String 
 /// Format: `tws_{collection_slug}_{thread_slug}`
 ///
 /// Individual sessions append `_1`, `_2`, etc.
+#[cfg(test)]
 pub fn tmux_session_prefix(collection_name: &str, thread_name: &str) -> String {
     format!("tws_{}_{}", slugify(collection_name), slugify(thread_name))
 }
 
 /// Generates a labeled tmux session name.
 /// Format: `tws_{collection_slug}_{thread_slug}_{label_slug}`
+#[cfg(test)]
 pub fn tmux_session_name_labeled(collection_name: &str, thread_name: &str, label: &str) -> String {
     format!("{}_{}", tmux_session_prefix(collection_name, thread_name), slugify(label))
 }

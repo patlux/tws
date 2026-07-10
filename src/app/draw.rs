@@ -293,7 +293,18 @@ impl App {
             // Status bar
             let active_count = self.state.active_sessions.len();
             let status_ctx = self.status_context(&selected_item);
-            status_bar::render(frame, status_ctx, chunks[status_idx], active_count, self.state.active_filter, flash_msg.as_deref(), &self.theme, &self.keymap);
+            status_bar::render(
+                frame,
+                status_ctx,
+                chunks[status_idx],
+                status_bar::StatusState {
+                    active_session_count: active_count,
+                    filter_active: self.state.active_filter,
+                    flash: flash_msg.as_deref(),
+                },
+                &self.theme,
+                &self.keymap,
+            );
 
             // Draw modal overlay if active (over full area so it centers properly)
             match &self.mode {

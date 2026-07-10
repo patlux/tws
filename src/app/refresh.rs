@@ -7,6 +7,7 @@ impl App {
     pub(super) fn refresh_preview(&mut self, selected: &SelectedItem) {
         if let SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) = selected {
             if let Some(agent) = self.state.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx) {
+                let session_name = agent.tmux_session_name.clone();
                 let pane_id = agent.pane_id.clone();
                 let pane_changed = self.preview_pane_id.as_deref() != Some(&pane_id);
                 let needs_refresh = pane_changed
@@ -17,7 +18,7 @@ impl App {
                     self.last_preview_refresh = Instant::now();
                     let tx = self.preview_tx.clone();
                     std::thread::spawn(move || {
-                        if let Some(raw) = tmux::capture_pane(&pane_id)
+                        if let Some(raw) = mux::capture_pane(&session_name, &pane_id)
                             && let Ok(mut text) = raw.as_bytes().into_text() {
                                 // Same Reset punch-through as notes: remap so the app
                                 // background shows through, keeping the agent's real colors.
@@ -53,7 +54,7 @@ impl App {
     pub(super) fn do_refresh_sessions(&mut self) {
         self.refresh_epoch += 1;
         self.refresh_worktree_sessions();
-        let live = tmux::list_tws_sessions_with_timestamps();
+        let live = mux::list_managed_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
         self.prune_marked_sessions();
         self.last_refresh = Instant::now();
@@ -72,7 +73,7 @@ impl App {
         let status_dir = persistence::config_dir().join("pi-status");
         let trigger_path = persistence::config_dir().join("agent.trigger");
         std::thread::spawn(move || {
-            let live = tmux::list_tws_sessions_with_timestamps();
+            let live = mux::list_managed_sessions_with_timestamps();
             let discoveries: Vec<(uuid::Uuid, PathBuf, DiscoverOptions, Vec<worktrees::DiscoveredWorktree>)> =
                 worktree_jobs
                     .into_iter()
@@ -84,9 +85,14 @@ impl App {
             // Scan all live tws sessions (superset of the matched ones);
             // apply_agent_scan filters down to active sessions.
             let session_names: Vec<String> = live.iter().map(|(n, _)| n.clone()).collect();
-            let agents = agent_scan::scan_agents(&session_names);
+            let agents = mux::scan_agents(&session_names);
             let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
-            let pi_statuses = pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
+            let pi_statuses = pi_status::load_and_prune(
+                &status_dir,
+                &live_panes,
+                PI_STATUS_MAX_AGE,
+                mux::backend(),
+            );
             let trigger_mtime = std::fs::metadata(&trigger_path).and_then(|m| m.modified()).ok();
             let _ = tx.send(RefreshResult {
                 epoch,
@@ -113,9 +119,14 @@ impl App {
         let status_dir = persistence::config_dir().join("pi-status");
         let trigger_path = persistence::config_dir().join("agent.trigger");
         std::thread::spawn(move || {
-            let agents = agent_scan::scan_agents(&session_names);
+            let agents = mux::scan_agents(&session_names);
             let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
-            let pi_statuses = pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
+            let pi_statuses = pi_status::load_and_prune(
+                &status_dir,
+                &live_panes,
+                PI_STATUS_MAX_AGE,
+                mux::backend(),
+            );
             let trigger_mtime = std::fs::metadata(&trigger_path).and_then(|m| m.modified()).ok();
             let _ = tx.send(RefreshResult {
                 epoch,
@@ -358,11 +369,16 @@ impl App {
             .iter()
             .map(|s| s.tmux_session_name.clone())
             .collect();
-        let agents = agent_scan::scan_agents(&session_names);
+        let agents = mux::scan_agents(&session_names);
 
         let status_dir = persistence::config_dir().join("pi-status");
         let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
-        let pi_statuses = pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE);
+        let pi_statuses = pi_status::load_and_prune(
+                &status_dir,
+                &live_panes,
+                PI_STATUS_MAX_AGE,
+                mux::backend(),
+            );
 
         let trigger_path = persistence::config_dir().join("agent.trigger");
         let trigger_mtime = std::fs::metadata(&trigger_path).and_then(|m| m.modified()).ok();

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
-use crate::core::model::{AgentSession, AgentType};
+use tws_core::model::{AgentSession, AgentType};
 
 /// Pane info parsed from tmux list-panes output.
 struct PaneInfo {
