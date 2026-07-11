@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 
 use crate::core::model::{Collection, Thread};
 use crate::core::persistence;
@@ -36,7 +36,11 @@ pub fn run() -> io::Result<()> {
         // orphan collections/threads behind.
         let mut created_col = false;
         let mut created_thread_in: Option<usize> = None;
-        fn rollback(collections: &mut Vec<Collection>, created_col: bool, created_thread_in: Option<usize>) {
+        fn rollback(
+            collections: &mut Vec<Collection>,
+            created_col: bool,
+            created_thread_in: Option<usize>,
+        ) {
             if let Some(ci) = created_thread_in {
                 collections[ci].threads.pop();
             }
@@ -55,7 +59,7 @@ pub fn run() -> io::Result<()> {
 
         // If pick_collection returned an index beyond current length, a new one was created
         if col_idx >= collections.len() {
-            let name = prompt("  New collection name: ")?;
+            let name = prompt("  New collection name: ")?.unwrap_or_default();
             if name.is_empty() {
                 println!("Skipping \"{}\".\n", session_name);
                 continue;
@@ -74,7 +78,7 @@ pub fn run() -> io::Result<()> {
         };
 
         if thread_idx >= collections[col_idx].threads.len() {
-            let name = prompt("  New thread name: ")?;
+            let name = prompt("  New thread name: ")?.unwrap_or_default();
             if name.is_empty() {
                 println!("Skipping \"{}\".\n", session_name);
                 rollback(&mut collections, created_col, created_thread_in);
@@ -84,7 +88,7 @@ pub fn run() -> io::Result<()> {
             created_thread_in = Some(col_idx);
         }
 
-        let label = prompt_label()?;
+        let label = prompt_label()?.unwrap_or_default();
         if label.is_empty() {
             println!("Skipping \"{}\".\n", session_name);
             rollback(&mut collections, created_col, created_thread_in);
@@ -95,10 +99,7 @@ pub fn run() -> io::Result<()> {
         let thread_name = &collections[col_idx].threads[thread_idx].name;
         let new_name = mux::regular_name(col_name, thread_name, &label);
 
-        println!(
-            "\n  Rename: \"{}\" → \"{}\"\n",
-            session_name, new_name
-        );
+        println!("\n  Rename: \"{}\" → \"{}\"\n", session_name, new_name);
 
         if confirm("  Proceed?")? {
             match mux::rename_session(session_name, &new_name) {
@@ -138,7 +139,9 @@ fn pick_collection(collections: &[Collection]) -> io::Result<Option<usize>> {
     println!("    [s] Skip this session");
 
     loop {
-        let input = prompt("  Choice: ")?;
+        let Some(input) = prompt("  Choice: ")? else {
+            return Ok(None);
+        };
         if input == "s" {
             return Ok(None);
         }
@@ -164,7 +167,9 @@ fn pick_thread(collection: &Collection) -> io::Result<Option<usize>> {
     println!("    [s] Skip this session");
 
     loop {
-        let input = prompt("  Choice: ")?;
+        let Some(input) = prompt("  Choice: ")? else {
+            return Ok(None);
+        };
         if input == "s" {
             return Ok(None);
         }
@@ -180,19 +185,60 @@ fn pick_thread(collection: &Collection) -> io::Result<Option<usize>> {
     }
 }
 
-fn prompt_label() -> io::Result<String> {
+fn prompt_label() -> io::Result<Option<String>> {
     prompt("  Session label (e.g., main, debug): ")
 }
 
-fn prompt(msg: &str) -> io::Result<String> {
-    print!("{}", msg);
-    io::stdout().flush()?;
+fn prompt(msg: &str) -> io::Result<Option<String>> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    prompt_from(&mut stdin.lock(), &mut stdout.lock(), msg)
+}
+
+fn prompt_from(
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+    msg: &str,
+) -> io::Result<Option<String>> {
+    write!(writer, "{}", msg)?;
+    writer.flush()?;
     let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(input.trim().to_string())
+    if reader.read_line(&mut input)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(input.trim().to_string()))
 }
 
 fn confirm(msg: &str) -> io::Result<bool> {
     let input = prompt(&format!("{} [y/N] ", msg))?;
-    Ok(input == "y" || input == "Y")
+    Ok(input.is_some_and(|input| input == "y" || input == "Y"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn prompt_returns_none_at_end_of_input() {
+        let mut reader = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        assert_eq!(
+            prompt_from(&mut reader, &mut output, "Choice: ").unwrap(),
+            None
+        );
+        assert_eq!(output, b"Choice: ");
+    }
+
+    #[test]
+    fn prompt_trims_input() {
+        let mut reader = Cursor::new(b"  main  \n".to_vec());
+        let mut output = Vec::new();
+
+        assert_eq!(
+            prompt_from(&mut reader, &mut output, "Label: ").unwrap(),
+            Some("main".to_string())
+        );
+    }
 }

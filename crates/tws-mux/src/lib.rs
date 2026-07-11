@@ -45,20 +45,72 @@ pub fn name() -> &'static str {
     backend().name()
 }
 
+fn version_arg(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Tmux => "-V",
+        Backend::Zellij => "--version",
+    }
+}
+
+const MIN_ZELLIJ_VERSION: (u64, u64, u64) = (0, 44, 3);
+
+fn parse_version(output: &str) -> Option<(u64, u64, u64)> {
+    let version = output
+        .split_whitespace()
+        .find(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))?
+        .split('-')
+        .next()?;
+    let mut parts = version.split('.').map(|part| {
+        part.chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u64>()
+            .ok()
+    });
+    Some((
+        parts.next()??,
+        parts.next()??,
+        parts.next().flatten().unwrap_or(0),
+    ))
+}
+
+fn validate_version(backend: Backend, output: &str) -> Result<(), String> {
+    if backend != Backend::Zellij {
+        return Ok(());
+    }
+    let version = parse_version(output)
+        .ok_or_else(|| format!("could not parse zellij version from {output:?}"))?;
+    if version < MIN_ZELLIJ_VERSION {
+        return Err(format!(
+            "zellij {}.{}.{} is unsupported; install zellij {}.{}.{} or newer",
+            version.0,
+            version.1,
+            version.2,
+            MIN_ZELLIJ_VERSION.0,
+            MIN_ZELLIJ_VERSION.1,
+            MIN_ZELLIJ_VERSION.2,
+        ));
+    }
+    Ok(())
+}
+
 pub fn ensure_available() -> Result<(), String> {
-    let binary = name();
-    std::process::Command::new(binary)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|_| format!("{binary} not found on PATH — install {binary} first"))
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("failed to run {binary} --version"))
-        })
+    let backend = backend();
+    let binary = backend.name();
+    let version_arg = version_arg(backend);
+    let output = std::process::Command::new(binary)
+        .arg(version_arg)
+        .output()
+        .map_err(|_| format!("{binary} not found on PATH — install {binary} first"))?;
+    if !output.status.success() {
+        return Err(format!("failed to run {binary} {version_arg}"));
+    }
+    let version_output = if output.stdout.is_empty() {
+        String::from_utf8_lossy(&output.stderr)
+    } else {
+        String::from_utf8_lossy(&output.stdout)
+    };
+    validate_version(backend, version_output.trim())
 }
 
 pub fn regular_prefix(collection_name: &str, thread_name: &str) -> String {
@@ -175,6 +227,28 @@ pub fn scan_agents(session_names: &[String]) -> Vec<AgentSession> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backends_use_their_native_version_flags() {
+        assert_eq!(version_arg(Backend::Tmux), "-V");
+        assert_eq!(version_arg(Backend::Zellij), "--version");
+    }
+
+    #[test]
+    fn parses_backend_version_output() {
+        assert_eq!(parse_version("tmux 3.6a"), Some((3, 6, 0)));
+        assert_eq!(parse_version("zellij 0.44.3"), Some((0, 44, 3)));
+        assert_eq!(parse_version("zellij 0.45.0-dev"), Some((0, 45, 0)));
+        assert_eq!(parse_version("unknown"), None);
+    }
+
+    #[test]
+    fn rejects_unsupported_zellij_versions() {
+        assert!(validate_version(Backend::Zellij, "zellij 0.43.1").is_err());
+        assert!(validate_version(Backend::Zellij, "zellij 0.44.3").is_ok());
+        assert!(validate_version(Backend::Zellij, "zellij 0.45.0").is_ok());
+        assert!(validate_version(Backend::Tmux, "tmux 3.4").is_ok());
+    }
 
     #[test]
     fn default_backend_keeps_tmux_names() {
