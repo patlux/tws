@@ -1341,7 +1341,7 @@ impl App {
                     } else {
                         self.set_error(format!("Killing sessions failed:\n{}", kill_errors.join("\n")));
                     }
-                }
+                    }
                 ConfirmPurpose::DeleteWorktree { repo, path, name, tmux_session_name, kill_session } => {
                     if self.pending_worktree_deletes.contains_key(&tmux_session_name) {
                         self.set_flash("Worktree delete already running");
@@ -1458,9 +1458,13 @@ impl App {
                 }
             }
         } else {
-            // Outside tmux: suspend TUI, attach (blocks), then resume TUI
+            // Outside the multiplexer: suspend TUI, attach (blocks), then resume.
+            // Clear the main screen on both transitions so output left by prior
+            // Zellij clients never flashes between alternate screens.
             tui::restore()?;
+            tui::clear_main_screen()?;
             let _ = mux::attach_session(session_name);
+            tui::clear_main_screen()?;
             *terminal = tui::init()?;
         }
 
