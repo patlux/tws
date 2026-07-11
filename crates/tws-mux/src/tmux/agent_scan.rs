@@ -3,6 +3,8 @@ use std::process::Command;
 
 use tws_core::model::{AgentSession, AgentType};
 
+use crate::agent_detection::{clean_pane_title, identify_agent};
+
 /// Pane info parsed from tmux list-panes output.
 struct PaneInfo {
     session_name: String,
@@ -154,80 +156,6 @@ fn parse_processes(raw: &str) -> HashMap<u32, Vec<(u32, String)>> {
     map
 }
 
-/// Check if a command line matches a known agent.
-/// `command` is the full command string from `ps -o command` (exe + args).
-fn identify_agent(command: &str) -> Option<AgentType> {
-    let mut tokens = command.split_whitespace();
-    let exe = tokens.next()?;
-    let exe_basename = exe.rsplit('/').next().unwrap_or(exe);
-
-    match exe_basename {
-        "claude" => Some(AgentType::ClaudeCode),
-        "codex" => Some(AgentType::Codex),
-        "pi" | "pi-coding-agent" => Some(AgentType::Pi),
-        // npm-installed agents run as: node /path/to/node_modules/<pkg>/cli.js
-        // Nix-installed Pi runs as: deno run ... /nix/store/...-pi-coding-agent-.../dist/cli.js
-        // Claude Code: @anthropic-ai/claude-code  →  path component "claude-code" or "claude"
-        // Codex:       @openai/codex              →  path component "codex"
-        // Pi:          @earendil-works/pi-coding-agent → path component containing "pi-coding-agent"
-        "node" | "deno" => identify_agent_script(tokens),
-        _ => None,
-    }
-}
-
-fn identify_agent_script<'a>(tokens: impl Iterator<Item = &'a str>) -> Option<AgentType> {
-    for token in tokens {
-        if !token.contains('/') {
-            continue;
-        }
-        let components: Vec<&str> = token.split('/').collect();
-        // Only trust package-ish path components: either directly under a
-        // node_modules/ (or one level deeper for scoped packages), or a Nix
-        // store path containing the agent name. A bare project directory
-        // called "pi" or "claude" must not match.
-        let is_pkg_component = |idx: usize| {
-            components
-                .get(..idx)
-                .is_some_and(|prefix| {
-                    prefix.iter().rev().take(2).any(|&c| c == "node_modules")
-                })
-                || components
-                    .get(idx.wrapping_sub(1))
-                    .is_some_and(|&parent| parent == "bin" || parent.contains("-pi-coding-agent-"))
-        };
-        for (idx, &c) in components.iter().enumerate() {
-            let matched = match c {
-                "codex" => Some(AgentType::Codex),
-                "claude" | "claude-code" => Some(AgentType::ClaudeCode),
-                "pi" | "pi-coding-agent" => Some(AgentType::Pi),
-                _ if c.contains("-pi-coding-agent-") => Some(AgentType::Pi),
-                _ => None,
-            };
-            if let Some(agent) = matched
-                && (is_pkg_component(idx) || c.contains("-pi-coding-agent-")) {
-                    return Some(agent);
-                }
-        }
-    }
-    None
-}
-
-/// Strip agent-specific prefixes from pane titles to get a clean display name.
-fn clean_pane_title(title: &str, agent_type: AgentType) -> String {
-    let trimmed = title.trim();
-    match agent_type {
-        AgentType::ClaudeCode => {
-            // Claude Code uses braille dots (U+2800..U+28FF) as spinner indicators,
-            // and prefixes titles with ✳ (U+2733, eight spoked asterisk) as its logo.
-            let s = trimmed
-                .trim_start_matches(|c: char| c.is_whitespace() || ('\u{2800}'..='\u{28ff}').contains(&c));
-            let s = s.strip_prefix('\u{2733}').unwrap_or(s).trim_start();
-            s.to_string()
-        }
-        AgentType::Codex | AgentType::Pi => trimmed.to_string(),
-    }
-}
-
 fn make_display_name(pane: &PaneInfo, agent_type: AgentType) -> String {
     let cleaned = clean_pane_title(&pane.pane_title, agent_type);
     if cleaned.is_empty() {
@@ -287,59 +215,10 @@ mod tests {
         let map = parse_processes(raw);
         let kids = map.get(&100).unwrap();
         assert_eq!(kids.len(), 2);
-        assert!(kids.iter().any(|(pid, comm)| *pid == 200 && comm == "claude"));
-    }
-
-    #[test]
-    fn identify_agent_basename() {
-        assert_eq!(identify_agent("claude"), Some(AgentType::ClaudeCode));
-        assert_eq!(identify_agent("/usr/local/bin/claude"), Some(AgentType::ClaudeCode));
-        assert_eq!(identify_agent("codex"), Some(AgentType::Codex));
-        assert_eq!(identify_agent("/opt/homebrew/bin/codex"), Some(AgentType::Codex));
-        assert_eq!(identify_agent("pi"), Some(AgentType::Pi));
-        assert_eq!(identify_agent("pi-coding-agent"), Some(AgentType::Pi));
-        assert_eq!(identify_agent("/nix/store/hash-pi-coding-agent-0.78.0/bin/pi"), Some(AgentType::Pi));
-        assert_eq!(identify_agent("vim"), None);
-        assert_eq!(identify_agent("node"), None);
-    }
-
-    #[test]
-    fn identify_agent_node_npm() {
-        // npm-installed codex
-        assert_eq!(
-            identify_agent("node /opt/homebrew/lib/node_modules/@openai/codex/dist/cli.js"),
-            Some(AgentType::Codex)
+        assert!(
+            kids.iter()
+                .any(|(pid, comm)| *pid == 200 && comm == "claude")
         );
-        assert_eq!(
-            identify_agent("node /home/user/.nvm/versions/node/v20/lib/node_modules/codex/cli.js"),
-            Some(AgentType::Codex)
-        );
-        // npm-installed Claude Code (@anthropic-ai/claude-code)
-        assert_eq!(
-            identify_agent("node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"),
-            Some(AgentType::ClaudeCode)
-        );
-        assert_eq!(
-            identify_agent("node /usr/lib/node_modules/claude-code/dist/cli.js"),
-            Some(AgentType::ClaudeCode)
-        );
-        // npm-installed Pi coding agent
-        assert_eq!(
-            identify_agent("node /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
-            Some(AgentType::Pi)
-        );
-        assert_eq!(
-            identify_agent("node /home/user/.nvm/versions/node/v20/lib/node_modules/pi-coding-agent/dist/index.js"),
-            Some(AgentType::Pi)
-        );
-        assert_eq!(
-            identify_agent("deno run --allow-all /nix/store/hash-pi-coding-agent-0.78.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
-            Some(AgentType::Pi)
-        );
-        // node running something unrelated — should not match
-        assert_eq!(identify_agent("node /path/to/my-app/index.js"), None);
-        assert_eq!(identify_agent("node /path/to/codex-tutorial/index.js"), None);
-        assert_eq!(identify_agent("node"), None);
     }
 
     #[test]
@@ -382,8 +261,20 @@ mod tests {
     #[test]
     fn match_agents_multiple_agents_one_session() {
         let panes = vec![
-            PaneInfo { session_name: "tws_work_proj".into(), window_index: 0, pane_id: "%0".into(), pane_pid: 100, pane_title: "\u{2810} task-a".into() },
-            PaneInfo { session_name: "tws_work_proj".into(), window_index: 1, pane_id: "%1".into(), pane_pid: 101, pane_title: "".into() },
+            PaneInfo {
+                session_name: "tws_work_proj".into(),
+                window_index: 0,
+                pane_id: "%0".into(),
+                pane_pid: 100,
+                pane_title: "\u{2810} task-a".into(),
+            },
+            PaneInfo {
+                session_name: "tws_work_proj".into(),
+                window_index: 1,
+                pane_id: "%1".into(),
+                pane_pid: 101,
+                pane_title: "".into(),
+            },
         ];
         let mut children = HashMap::new();
         children.insert(100, vec![(200, "claude".into())]);
@@ -395,21 +286,5 @@ mod tests {
         assert_eq!(agents[0].display_name, "task-a");
         assert_eq!(agents[1].agent_type, AgentType::Codex);
         assert_eq!(agents[1].display_name, "Codex (w:1)"); // fallback: empty title
-    }
-
-    #[test]
-    fn clean_pane_title_strips_braille() {
-        assert_eq!(clean_pane_title("\u{2810} fix-bug", AgentType::ClaudeCode), "fix-bug");
-        assert_eq!(clean_pane_title("\u{2812}\u{2812} task", AgentType::ClaudeCode), "task");
-        assert_eq!(clean_pane_title("plain title", AgentType::ClaudeCode), "plain title");
-        assert_eq!(clean_pane_title("\u{2733} fix-bug", AgentType::ClaudeCode), "fix-bug");
-        assert_eq!(clean_pane_title("\u{2733} task with spaces", AgentType::ClaudeCode), "task with spaces");
-        assert_eq!(clean_pane_title("", AgentType::ClaudeCode), "");
-    }
-
-    #[test]
-    fn clean_pane_title_codex_passthrough() {
-        assert_eq!(clean_pane_title("codex-task", AgentType::Codex), "codex-task");
-        assert_eq!(clean_pane_title("pi-task", AgentType::Pi), "pi-task");
     }
 }

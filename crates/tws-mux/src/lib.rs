@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use tws_core::model::AgentSession;
 pub use tws_core::BackendKind as Backend;
+use tws_core::model::AgentSession;
 
+mod agent_detection;
 mod tmux;
 mod zellij;
 
@@ -14,7 +15,11 @@ pub fn configure(value: &str) -> Result<(), String> {
     let backend = match value {
         "tmux" => Backend::Tmux,
         "zellij" => Backend::Zellij,
-        other => return Err(format!("unknown backend {other:?}; expected tmux or zellij")),
+        other => {
+            return Err(format!(
+                "unknown backend {other:?}; expected tmux or zellij"
+            ));
+        }
     };
     BACKEND
         .set(backend)

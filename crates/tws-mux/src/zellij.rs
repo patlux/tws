@@ -6,7 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use tws_core::model::{AgentSession, AgentType};
+use tws_core::model::AgentSession;
+
+use crate::agent_detection::{clean_pane_title, identify_agent};
 
 fn run(args: &[&str]) -> Result<(), String> {
     let output = Command::new("zellij")
@@ -100,6 +102,12 @@ pub fn new_session(name: &str, cwd: Option<&Path>) -> Result<(), String> {
         command.arg("options");
     }
     if let Some(cwd) = cwd {
+        // `attach --create-background ... options --default-cwd` is ignored by
+        // Zellij 0.44.3 while the background server is being created. Starting
+        // the client process in the requested directory makes the initial pane
+        // inherit the correct cwd; keep the explicit option for future Zellij
+        // versions and for subsequently created panes.
+        command.current_dir(cwd);
         command.arg("--default-cwd").arg(cwd);
     }
     if let Some(layout) = layout {
@@ -210,40 +218,6 @@ fn list_panes(session_name: &str) -> Vec<PaneInfo> {
     .unwrap_or_default()
 }
 
-fn identify_agent(command: &str) -> Option<AgentType> {
-    let mut tokens = command.split_whitespace();
-    let executable = tokens.next()?;
-    let basename = executable.rsplit('/').next().unwrap_or(executable);
-    match basename {
-        "claude" => Some(AgentType::ClaudeCode),
-        "codex" => Some(AgentType::Codex),
-        "pi" | "pi-coding-agent" => Some(AgentType::Pi),
-        "node" | "deno" => tokens.find_map(|token| {
-            if token.contains("pi-coding-agent") {
-                Some(AgentType::Pi)
-            } else if token.contains("claude-code") || token.contains("node_modules/claude/") {
-                Some(AgentType::ClaudeCode)
-            } else if token.contains("node_modules/codex/") {
-                Some(AgentType::Codex)
-            } else {
-                None
-            }
-        }),
-        _ => None,
-    }
-}
-
-fn clean_title(title: &str, agent_type: AgentType) -> String {
-    let title = title.trim();
-    if agent_type != AgentType::ClaudeCode {
-        return title.to_string();
-    }
-    let title = title.trim_start_matches(|character: char| {
-        character.is_whitespace() || ('\u{2800}'..='\u{28ff}').contains(&character)
-    });
-    title.strip_prefix('\u{2733}').unwrap_or(title).trim_start().to_string()
-}
-
 pub fn scan_agents(session_names: &[String]) -> Vec<AgentSession> {
     let sessions: HashSet<&str> = session_names.iter().map(String::as_str).collect();
     let mut result = Vec::new();
@@ -259,14 +233,18 @@ pub fn scan_agents(session_names: &[String]) -> Vec<AgentSession> {
             let Some(agent_type) = identify_agent(command) else {
                 continue;
             };
-            let display_name = clean_title(&pane.title, agent_type);
+            let display_name = clean_pane_title(&pane.title, agent_type);
             result.push(AgentSession {
                 agent_type,
                 tmux_session_name: session_name.clone(),
                 window_index: pane.tab_position,
                 pane_id: format!("terminal_{}", pane.id),
                 display_name: if display_name.is_empty() {
-                    format!("{} (tab:{})", agent_type.display_name(), pane.tab_position + 1)
+                    format!(
+                        "{} (tab:{})",
+                        agent_type.display_name(),
+                        pane.tab_position + 1
+                    )
                 } else {
                     display_name
                 },
@@ -281,26 +259,6 @@ pub fn scan_agents(session_names: &[String]) -> Vec<AgentSession> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn identifies_direct_agents() {
-        assert_eq!(identify_agent("claude"), Some(AgentType::ClaudeCode));
-        assert_eq!(identify_agent("/usr/bin/codex"), Some(AgentType::Codex));
-        assert_eq!(identify_agent("pi"), Some(AgentType::Pi));
-        assert_eq!(identify_agent("nvim"), None);
-    }
-
-    #[test]
-    fn identifies_wrapped_agents() {
-        assert_eq!(
-            identify_agent("node /tmp/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
-            Some(AgentType::Pi)
-        );
-        assert_eq!(
-            identify_agent("node /tmp/node_modules/@anthropic-ai/claude-code/cli.js"),
-            Some(AgentType::ClaudeCode)
-        );
-    }
 
     #[test]
     fn parses_real_zellij_pane_command_fields() {
