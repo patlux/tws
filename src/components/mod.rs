@@ -5,7 +5,6 @@ pub mod error_modal;
 pub mod finder_modal;
 pub mod help_modal;
 pub mod input_modal;
-pub mod notes_sidebar;
 pub mod recent_bar;
 pub mod status_bar;
 pub mod tree_view;

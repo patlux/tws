@@ -64,10 +64,9 @@ The tree widget (`tui-tree-widget`) uses UUID strings as node identifiers. `stat
 | `core/state.rs` | AppState, CRUD methods, `resolve_selection()`, session/agent lookups |
 | `core/persistence.rs` | JSON save/load to `~/.config/tws/` (state + UI state) |
 | `core/pi_status.rs` | Reader for Pi work-status sidecar files (`~/.config/tws/pi-status/`), written by the `pi-tmux-session-map` Pi package |
-| `core/notes.rs` | File-based notes stored as `.md` in `~/.config/tws/notes/` |
 | `tmux/commands.rs` | Thin wrappers around `tmux` CLI subcommands via `std::process::Command` |
 | `tmux/agent_scan.rs` | Detect AI agents by `tmux list-panes` + `ps -e`, match child process names |
-| `components/` | Stateless render functions: tree_view, input_modal, confirm_modal, finder_modal, notes_sidebar, status_bar, recent_bar |
+| `components/` | Stateless render functions: tree_view, input_modal, confirm_modal, finder_modal, status_bar, recent_bar |
 | `theme.rs` | All `Style` constants — warm palette (orange collections, tan threads, sage green sessions) |
 
 ### Rendering

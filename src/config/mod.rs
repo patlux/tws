@@ -128,7 +128,6 @@ impl WorktreeConfig {
 pub struct KeysConfig {
     pub normal: Option<HashMap<String, String>>,
     pub agents: Option<HashMap<String, String>>,
-    pub notes: Option<HashMap<String, String>>,
     pub finder: Option<HashMap<String, String>>,
     pub input: Option<HashMap<String, String>>,
     pub confirm: Option<HashMap<String, String>>,
@@ -213,9 +212,6 @@ pub fn build_keymap(config: &Config) -> Keymap {
     }
     if let Some(overrides) = &keys_cfg.agents {
         km.apply_overrides(KeyMode::Agents, overrides);
-    }
-    if let Some(overrides) = &keys_cfg.notes {
-        km.apply_overrides(KeyMode::Notes, overrides);
     }
     if let Some(overrides) = &keys_cfg.finder {
         km.apply_overrides(KeyMode::Finder, overrides);

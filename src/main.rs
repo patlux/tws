@@ -93,13 +93,12 @@ fn run_tui() -> std::io::Result<()> {
     let cfg = config::load_config();
     let palette = config::resolve_palette(&cfg);
     let theme = theme::Theme::build(&palette);
-    let note_stylesheet = theme::NoteStyleSheet::new(&palette);
     let keymap = config::build_keymap(&cfg);
     let start_dirs = cfg.start_dirs.clone();
     let worktrees = cfg.worktrees.clone();
 
     let mut terminal = tui::init()?;
-    let mut app = App::new(state, theme, note_stylesheet, keymap, start_dirs, worktrees);
+    let mut app = App::new(state, theme, keymap, start_dirs, worktrees);
     let result = app.run(&mut terminal, ui_state);
     tui::restore()?;
     if let Some(warning) = &app.exit_warning {

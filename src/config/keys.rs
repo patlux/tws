@@ -27,9 +27,6 @@ pub enum Action {
     RecentSession4,
     RecentSession5,
     ToggleView,
-    OpenEditor,
-    ScrollUp,
-    ScrollDown,
     Confirm,
     Cancel,
     Backspace,
@@ -44,14 +41,12 @@ pub enum Action {
     /// First press arms, second press jumps to the top (vim `gg`).
     JumpTop,
     JumpBottom,
-    SwitchFocus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyMode {
     Normal,
     Agents,
-    Notes,
     Finder,
     Input,
     ConfirmModal,
@@ -143,9 +138,6 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "recent_session_4" => Ok(Action::RecentSession4),
         "recent_session_5" => Ok(Action::RecentSession5),
         "toggle_view" => Ok(Action::ToggleView),
-        "open_editor" => Ok(Action::OpenEditor),
-        "scroll_up" => Ok(Action::ScrollUp),
-        "scroll_down" => Ok(Action::ScrollDown),
         "confirm" => Ok(Action::Confirm),
         "cancel" => Ok(Action::Cancel),
         "backspace" => Ok(Action::Backspace),
@@ -159,7 +151,6 @@ pub fn parse_action(s: &str) -> Result<Action, String> {
         "pin_agent_slot" => Ok(Action::PinAgentSlot),
         "jump_top" => Ok(Action::JumpTop),
         "jump_bottom" => Ok(Action::JumpBottom),
-        "switch_focus" => Ok(Action::SwitchFocus),
         _ => Err(format!("unknown action: {:?}", s)),
     }
 }
@@ -248,7 +239,6 @@ impl Keymap {
         bind!(M::Normal, KeyCode::Char('v'), KeyModifiers::NONE,  A::ToggleView);
         bind!(M::Normal, KeyCode::Char('g'), KeyModifiers::NONE,  A::JumpTop);
         bind!(M::Normal, KeyCode::Char('G'), KeyModifiers::SHIFT, A::JumpBottom);
-        bind!(M::Normal, KeyCode::Tab,       KeyModifiers::NONE,  A::SwitchFocus);
 
         // ── Agents mode ──────────────────────────────────────────────────────
         bind!(M::Agents, KeyCode::Char('j'), KeyModifiers::NONE, A::MoveDown);
@@ -262,14 +252,6 @@ impl Keymap {
         bind!(M::Agents, KeyCode::Char('P'), KeyModifiers::SHIFT, A::PinAgentSlot);
         bind!(M::Agents, KeyCode::Char('g'), KeyModifiers::NONE,  A::JumpTop);
         bind!(M::Agents, KeyCode::Char('G'), KeyModifiers::SHIFT, A::JumpBottom);
-
-        // ── Notes mode ───────────────────────────────────────────────────────
-        bind!(M::Notes, KeyCode::Enter,     KeyModifiers::NONE, A::OpenEditor);
-        bind!(M::Notes, KeyCode::Esc,       KeyModifiers::NONE, A::Cancel);
-        bind!(M::Notes, KeyCode::Char('k'), KeyModifiers::NONE, A::ScrollUp);
-        bind!(M::Notes, KeyCode::Up,        KeyModifiers::NONE, A::ScrollUp);
-        bind!(M::Notes, KeyCode::Char('j'), KeyModifiers::NONE, A::ScrollDown);
-        bind!(M::Notes, KeyCode::Down,      KeyModifiers::NONE, A::ScrollDown);
 
         // ── Input modal ──────────────────────────────────────────────────────
         bind!(M::Input, KeyCode::Esc,       KeyModifiers::NONE, A::Cancel);
@@ -400,14 +382,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_jump_and_focus_actions() {
+    fn parse_jump_actions() {
         assert_eq!(parse_action("jump_top").unwrap(), Action::JumpTop);
         assert_eq!(parse_action("jump_bottom").unwrap(), Action::JumpBottom);
-        assert_eq!(parse_action("switch_focus").unwrap(), Action::SwitchFocus);
         let km = Keymap::default_bindings();
         assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('g'), KeyModifiers::NONE), Some(Action::JumpTop));
         assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Char('G'), KeyModifiers::SHIFT), Some(Action::JumpBottom));
-        assert_eq!(km.resolve(KeyMode::Normal, KeyCode::Tab, KeyModifiers::NONE), Some(Action::SwitchFocus));
         assert_eq!(km.resolve(KeyMode::Agents, KeyCode::Char('g'), KeyModifiers::NONE), Some(Action::JumpTop));
     }
 
@@ -423,7 +403,6 @@ mod tests {
         assert_eq!(parse_action("hide").unwrap(), Action::Hide);
         assert_eq!(parse_action("show_hidden").unwrap(), Action::ShowHidden);
         assert_eq!(parse_action("toggle_active_filter").unwrap(), Action::ToggleActiveFilter);
-        assert_eq!(parse_action("open_editor").unwrap(), Action::OpenEditor);
         assert_eq!(parse_action("recent_session_1").unwrap(), Action::RecentSession1);
         assert_eq!(parse_action("mark_session").unwrap(), Action::MarkSession);
         assert_eq!(parse_action("clear_marks").unwrap(), Action::ClearMarks);

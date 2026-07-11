@@ -20,9 +20,9 @@ impl App {
                     std::thread::spawn(move || {
                         if let Some(raw) = mux::capture_pane(&session_name, &pane_id)
                             && let Ok(mut text) = raw.as_bytes().into_text() {
-                                // Same Reset punch-through as notes: remap so the app
+                                // Remap ANSI resets so the app
                                 // background shows through, keeping the agent's real colors.
-                                crate::core::markdown::clear_reset_backgrounds(&mut text);
+                                crate::core::ansi::clear_reset_backgrounds(&mut text);
                                 let _ = tx.send(PreviewResult { pane_id, text });
                             }
                     });
@@ -160,7 +160,6 @@ impl App {
             if let Some(sel) = self.pending_selection_restore.take() {
                 self.tree_state.select(sel);
                 self.ensure_visible_tree_selection();
-                self.sync_note_editor();
             }
             self.needs_redraw = true;
         }

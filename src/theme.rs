@@ -56,7 +56,6 @@ pub struct Theme {
     pub worktree_meta: Style,
     pub worktree_prunable: Style,
     pub highlight: Style,
-    pub highlight_unfocused: Style,
 
     // Pin badge in agents view
     pub pin_badge: Style,
@@ -111,13 +110,6 @@ pub struct Theme {
     pub scrollbar_thumb: Style,
     pub scrollbar_track: Style,
 
-    // Notes sidebar
-    pub notes_border_focused: Style,
-    pub notes_border_unfocused: Style,
-    pub notes_title_focused: Style,
-    pub notes_title_unfocused: Style,
-    pub notes_placeholder: Style,
-
     // Agent preview
     pub preview_border: Style,
     pub preview_title: Style,
@@ -158,7 +150,6 @@ impl Theme {
                 .fg(p.bg)
                 .bg(p.accent)
                 .add_modifier(Modifier::BOLD),
-            highlight_unfocused: Style::new().fg(Color::White).bg(p.border),
             pin_badge: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
 
             // Chrome
@@ -209,75 +200,11 @@ impl Theme {
             scrollbar_thumb: Style::new().fg(muted_text),
             scrollbar_track: Style::new().fg(subtle_border),
 
-            // Notes sidebar
-            notes_border_focused: Style::new().fg(p.accent),
-            notes_border_unfocused: Style::new().fg(subtle_border),
-            notes_title_focused: Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-            notes_title_unfocused: Style::new().fg(dim_text),
-            notes_placeholder: Style::new().fg(muted_text),
-
-            // Agent preview (shares unfocused styles with notes)
+            // Agent preview
             preview_border: Style::new().fg(subtle_border),
             preview_title: Style::new().fg(dim_text),
             preview_placeholder: Style::new().fg(muted_text),
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// NoteStyleSheet — tui-markdown stylesheet derived from Palette
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-pub struct NoteStyleSheet {
-    accent: Color,
-    green: Color,
-    dim: Color,
-    muted: Color,
-}
-
-impl NoteStyleSheet {
-    pub fn new(p: &Palette) -> Self {
-        Self {
-            accent: p.accent,
-            green: p.green,
-            dim: p.dim,
-            muted: p.muted,
-        }
-    }
-}
-
-impl tui_markdown::StyleSheet for NoteStyleSheet {
-    fn heading(&self, level: u8) -> Style {
-        match level {
-            1 => Style::new().fg(self.accent).add_modifier(Modifier::BOLD),
-            2 => Style::new().fg(self.accent),
-            _ => Style::new().fg(self.dim).add_modifier(Modifier::ITALIC),
-        }
-    }
-
-    fn code(&self) -> Style {
-        Style::new().fg(self.green)
-    }
-
-    fn link(&self) -> Style {
-        Style::new()
-            .fg(self.accent)
-            .add_modifier(Modifier::UNDERLINED)
-    }
-
-    fn blockquote(&self) -> Style {
-        Style::new()
-            .fg(self.muted)
-            .add_modifier(Modifier::ITALIC)
-    }
-
-    fn heading_meta(&self) -> Style {
-        Style::new().fg(self.muted)
-    }
-
-    fn metadata_block(&self) -> Style {
-        Style::new().fg(self.muted)
     }
 }
 
@@ -288,7 +215,6 @@ impl tui_markdown::StyleSheet for NoteStyleSheet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tui_markdown::StyleSheet;
 
     #[test]
     fn default_theme_matches_old_constants() {
@@ -376,18 +302,4 @@ mod tests {
         assert_eq!(midpoint(a, b), Color::Rgb(150, 150, 150));
     }
 
-    #[test]
-    fn note_stylesheet_uses_palette() {
-        let p = Palette {
-            accent: Color::Rgb(255, 0, 0),
-            ..Palette::default()
-        };
-        let ss = NoteStyleSheet::new(&p);
-        assert_eq!(
-            ss.heading(1),
-            Style::new()
-                .fg(Color::Rgb(255, 0, 0))
-                .add_modifier(Modifier::BOLD)
-        );
-    }
 }

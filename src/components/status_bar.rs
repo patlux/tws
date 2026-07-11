@@ -17,7 +17,6 @@ pub enum StatusContext {
     NormalWorktree,
     NormalWorktreeSession,
     NormalAgent,
-    Notes,
     Input,
     Confirm,
     Error,
@@ -64,7 +63,6 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
             (keymap.key_hint(KeyMode::Normal, Action::Hide),           "hide"),
             (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
-            ("Tab".to_string(),                                        "notes"),
         ],
         StatusContext::NormalThread => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
@@ -75,7 +73,6 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
             (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete"),
             (keymap.key_hint(KeyMode::Normal, Action::KillSession),    "kill sessions"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
-            ("Tab".to_string(),                                        "notes"),
         ],
         StatusContext::NormalSession => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
@@ -85,7 +82,6 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
             (keymap.key_hint(KeyMode::Normal, Action::MarkSession),    "mark"),
             (keymap.key_hint(KeyMode::Normal, Action::KillSession),    "kill"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
-            ("Tab".to_string(),                                        "notes"),
         ],
         StatusContext::NormalMarkedSessions { count } => vec![
             (format!("{} selected", count),                            ""),
@@ -99,7 +95,6 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
             (keymap.key_hint(KeyMode::Normal, Action::Enter),          "launch"),
             (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
-            ("Tab".to_string(),                                        "notes"),
         ],
         StatusContext::NormalWorktreeSession => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
@@ -108,18 +103,12 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
             (keymap.key_hint(KeyMode::Normal, Action::MarkSession),    "mark"),
             (keymap.key_hint(KeyMode::Normal, Action::KillSession),    "kill+delete"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
-            ("Tab".to_string(),                                        "notes"),
         ],
         StatusContext::NormalAgent => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
             (keymap.key_hint(KeyMode::Normal, Action::Enter),          "attach"),
             (keymap.key_hint(KeyMode::Normal, Action::Rename),         "rename"),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
-        ],
-        StatusContext::Notes => vec![
-            (keymap.key_hint(KeyMode::Notes, Action::OpenEditor),                              "edit"),
-            (keymap.key_hint(KeyMode::Notes, Action::Cancel),                                  "back"),
-            (keymap.key_hint_pair(KeyMode::Notes, Action::ScrollUp, Action::ScrollDown),       "scroll"),
         ],
         StatusContext::Input => vec![
             (keymap.key_hint(KeyMode::Input, Action::Confirm), "confirm"),

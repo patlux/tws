@@ -6,7 +6,7 @@ product
 
 ## Users
 
-Keyboard-first developers who organize active tmux sessions, worktrees, notes, and coding-agent processes from a terminal. They use tws during focused development work and need to understand workspace state and switch contexts quickly without leaving the keyboard.
+Keyboard-first developers who organize active tmux sessions, worktrees, and coding-agent processes from a terminal. They use tws during focused development work and need to understand workspace state and switch contexts quickly without leaving the keyboard.
 
 ## Product Purpose
 

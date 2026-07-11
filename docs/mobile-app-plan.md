@@ -9,7 +9,6 @@ verwaltet und interaktive Terminals auf tmux-Sessions öffnet.
 - Multi-Host: App startet mit Host-Liste, Hosts hinzufügbar (QR-Pairing)
 - Live-Dashboard: Tree-View mit Agent-Status + semantischem Pi-Status (Working/Retry/Erfolg/Abbruch/Unvollständig/Fehler)
 - CRUD: Collections/Threads anlegen/umbenennen/löschen, Sessions erstellen/killen/umbenennen
-- Notes lesen (Markdown)
 - Interaktives Terminal auf jede tmux-Session, natives Rendering (libghostty via Termini)
 - Read-only-Modus fürs "Zugucken" bei laufenden Agents
 
@@ -28,7 +27,7 @@ verwaltet und interaktive Terminals auf tmux-Sessions öffnet.
 │  ├─ tws-core   lib: model/state/tmux/…    │        │  ├─ Hosts / Dashboard (TS) │
 │  ├─ tws        TUI-Binary wie bisher      │  REST  │  └─ TerminalView           │
 │  └─ tws-server axum-Binary                │◄──────►│                            │
-│      ├─ REST: state, CRUD, notes          │   WS   │     Expo-Module (Swift)    │
+│      ├─ REST: state, CRUD          │   WS   │     Expo-Module (Swift)    │
 │      ├─ WS  /events: Status-Push          │◄──────►│     Termini + GhosttyKit   │
 │      └─ WS  /attach: PTY ↔ Bytes          │◄──────►│     WS nativ (kein Bridge- │
 │           portable-pty → tmux attach      │Tailnet │     Byte-Traffic)          │
@@ -86,11 +85,11 @@ Ziel-Layout:
 ```
 Cargo.toml            # [workspace] members = ["crates/*"]
 crates/
-  tws-core/           # lib: core/{model,state,persistence,pi_status,notes},
+  tws-core/           # lib: core/{model,state,persistence,pi_status},
                       #      tmux/{commands,agent_scan}, git/worktrees,
                       #      config-Parsing (config.toml → Struct)
   tws/                # bin "tws": app, components, theme, tui, event, import,
-                      #      markdown (tui-markdown), keymap-/palette-Resolution
+                      #      keymap-/palette-Resolution
   tws-server/         # bin "tws-server": Phase 2/3 (zunächst leeres Skeleton)
 ```
 
@@ -119,7 +118,6 @@ Crate `crates/tws-server`: tokio, axum, tower-http, ts-rs (dev), Dependency auf 
   - `POST /api/collections/:id/threads`, `PATCH/DELETE /api/threads/:id`
   - `POST /api/sessions` (Thread + Label + optional start_dir → `make_session_name` + `new_session_in_dir`)
   - `DELETE /api/sessions/:name` (kill), `PATCH /api/sessions/:name` (rename)
-  - `GET  /api/threads/:id/note`, `PUT /api/threads/:id/note`
   - `GET  /api/health` (Version, Hostname — für Host-Liste in der App)
 - [ ] `WS /api/events`: Snapshot-Push bei jeder Änderung, Broadcast an alle Clients
 - [ ] Auth-Middleware (Bearer), Token-Generierung in `~/.config/tws/server.toml`
@@ -158,7 +156,6 @@ kein Expo Go — natives Modul geplant).
 - [ ] Status-Badges: Agent-Typ (claude/codex), semantische Pi-Statusmarker (Parität zur TUI)
 - [ ] Recent-Sessions-Row (Analog `recent_bar`)
 - [ ] Aktionen (Context-Menü/Swipe): Session erstellen (Thread + Label + start_dir), killen (Confirm), umbenennen; Collection/Thread CRUD
-- [ ] Notes-Viewer (react-native-markdown o. ä., read-only in v1)
 - [ ] Offline-/Error-States pro Host (letzter Snapshot + "stale"-Hinweis)
 
 ### 4c — Terminal (natives Modul)
@@ -182,7 +179,6 @@ kein Expo Go — natives Modul geplant).
 - Push-Notifications ("Agent done") — braucht APNs-Relay oder ntfy-artigen Dienst
 - Pane-Preview im Dashboard (`capture_pane` existiert schon serverseitig)
 - Android via ghostty-web-WebView hinter gleichem `TerminalView`-Interface
-- Notes editieren
 - tmux-Window/Pane-Navigation in der App (statt nur Session-Attach)
 
 ## Risiken

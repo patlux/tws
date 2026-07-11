@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -12,9 +11,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{agent_preview, agents_view, confirm_modal, error_modal, finder_modal, help_modal, input_modal, notes_sidebar, recent_bar, tree_view};
-use crate::core::markdown::MarkdownRenderer;
-use crate::core::notes::{NoteEditor, NoteStore};
+use crate::components::{agent_preview, agents_view, confirm_modal, error_modal, finder_modal, help_modal, input_modal, recent_bar, tree_view};
 use crate::core::persistence;
 use crate::core::pi_status;
 use crate::core::model::{AgentSession, WorktreeSession, slugify};
@@ -23,7 +20,7 @@ use crate::event;
 use crate::config::{self, StartDirConfig, WorktreeConfig};
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::git::worktrees::{self, DiscoverOptions};
-use crate::theme::{Theme, NoteStyleSheet};
+use crate::theme::Theme;
 use tws_mux as mux;
 use crate::tui::{self, Tui};
 
@@ -222,11 +219,6 @@ impl FinderState {
 }
 
 /// Which pane has keyboard focus during normal mode.
-enum Focus {
-    Tree,
-    Notes,
-}
-
 /// Which primary view is active.
 enum ViewMode {
     Tree,
@@ -266,10 +258,6 @@ pub struct App {
     /// eprintln), e.g. a failed UI-state save on exit.
     pub exit_warning: Option<String>,
     mode: Mode,
-    focus: Focus,
-    notes: NoteStore,
-    note_editor: NoteEditor,
-    md_renderer: MarkdownRenderer,
     last_refresh: Instant,
     last_agent_trigger_mtime: Option<SystemTime>,
     flash: Option<(String, Instant)>,
@@ -416,7 +404,6 @@ impl App {
     pub fn new(
         state: AppState,
         theme: Theme,
-        note_stylesheet: NoteStyleSheet,
         keymap: Keymap,
         start_dir_configs: Vec<StartDirConfig>,
         worktree_configs: Vec<WorktreeConfig>,
@@ -431,10 +418,6 @@ impl App {
             running: true,
             exit_warning: None,
             mode: Mode::Normal,
-            focus: Focus::Tree,
-            notes: NoteStore::new(),
-            note_editor: NoteEditor::new(),
-            md_renderer: MarkdownRenderer::new(note_stylesheet),
             last_refresh: Instant::now(),
             last_agent_trigger_mtime: None,
             flash: None,
@@ -535,13 +518,11 @@ impl App {
             match result.result {
                 Ok(()) => {
                     self.marked_sessions.remove(&result.tmux_session_name);
-                    self.notes.remove(&result.tmux_session_name);
                     self.do_refresh_sessions();
                     if let Some(pending) = pending
                         && !pending.parent_selection.is_empty() {
                             self.tree_state.select(pending.parent_selection);
                         }
-                    self.sync_note_editor();
                     self.set_notification(format!("Deleted worktree {}", result.name), false);
                 }
                 Err(err) => {
@@ -562,7 +543,6 @@ impl App {
                     self.worktree_cache.clear();
                     self.refresh_worktree_sessions();
                     self.select_worktree_by_path(result.thread_id, &result.path);
-                    self.sync_note_editor();
                     self.set_notification(format!("Created worktree {}", result.branch), false);
                 }
                 Err(err) => {
@@ -660,7 +640,6 @@ impl App {
         }
         self.state.active_filter = ui_state.active_filter;
         self.agent_list_cursor = ui_state.agent_list_cursor;
-        self.sync_note_editor();
 
         while self.running {
             self.poll_worktree_delete_results();
@@ -786,7 +765,6 @@ mod tests {
         let mut app = App::new(
             AppState::empty(mux::Backend::Tmux),
             Theme::build(&palette),
-            NoteStyleSheet::new(&palette),
             Keymap::default_bindings(),
             Vec::new(),
             Vec::new(),

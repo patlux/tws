@@ -22,7 +22,7 @@ Threads are saved to `~/.config/tws/`. Sessions are real tmux sessions discovere
 
 ### Thread tree
 
-The main view. The thread/session tree on the left, a notes panel on the right. Threads expand to show their sessions, and each running session reveals any AI coding agents detected inside it. Press `?` to open the help menu, `Enter` on a thread to spawn a new session, or `Enter` on a session to attach. Press `H` on a collection or thread to hide it, and `u` to show all hidden collections and threads again.
+The main view. Threads expand to show their sessions, and each running session reveals any AI coding agents detected inside it. Press `?` to open the help menu, `Enter` on a thread to spawn a new session, or `Enter` on a session to attach. Press `H` on a collection or thread to hide it, and `u` to show all hidden collections and threads again.
 
 <img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 23 48" src="https://github.com/user-attachments/assets/0d38ff3d-1caf-4f5a-bd91-67dba3dad98f" />
 
@@ -33,10 +33,6 @@ Toggle with `v`. A flat view of every AI coding agent (Claude Code, Codex, Pi) r
 
 <img width="1470" height="956" alt="Screenshot 2026-06-06 at 17 24 23" src="https://github.com/user-attachments/assets/d4f09aca-03d9-49df-b391-bcdc6c06fd7e" />
 
-
-### Notes
-
-Each thread and session has its own markdown note, stored as a plain `.md` file under `~/.config/tws/notes/`. Press `Tab` to focus the notes panel, `Enter` to open the current note in `$EDITOR`. Renders with [glow](https://github.com/charmbracelet/glow) if installed, falls back to basic markdown otherwise. Handy for per-workstream scratch notes, todo lists, and command snippets.
 
 ### Fuzzy finder
 
@@ -143,7 +139,6 @@ Already have tmux sessions running? `tws import` walks you through assigning the
 
 - **[tmux](https://github.com/tmux/tmux)** — required for the default backend.
 - **[Zellij](https://zellij.dev)** 0.44.3 or newer — required for `--backend zellij` (structured pane inspection and targeted session switching).
-- **[glow](https://github.com/charmbracelet/glow)** — optional, for rich markdown rendering in the notes panel. Falls back to basic rendering if absent.
 
 ## Install
 
@@ -156,7 +151,6 @@ curl -fsSL https://raw.githubusercontent.com/ytaskiran/tws/main/install.sh | bas
 Downloads the latest release binary to `~/.local/bin`. The script will, **with your confirmation at each step**, also offer to:
 
 - add `~/.local/bin` to your `PATH`,
-- install `glow`,
 - configure agent-detection hooks in `~/.claude/settings.json` and/or `~/.codex/config.toml` (so tws can refresh its agent view when an agent starts or stops).
 
 Re-run the same command any time to upgrade.
@@ -196,7 +190,7 @@ tws --backend zellij        # launch the isolated Zellij edition
 tws --backend zellij import # import unmanaged Zellij sessions
 ```
 
-The backend can also be selected with `TWS_BACKEND=tmux|zellij`. Set an absolute `TWS_CONFIG_DIR` to isolate state, notes, UI state, locks, Pi status files, and recency data. Managed tmux sessions keep the `tws_`/`twsr_` prefixes; Zellij uses `twz_`/`twzr_`, so both editions can run concurrently.
+The backend can also be selected with `TWS_BACKEND=tmux|zellij`. Set an absolute `TWS_CONFIG_DIR` to isolate state, UI state, locks, Pi status files, and recency data. Managed tmux sessions keep the `tws_`/`twsr_` prefixes; Zellij uses `twz_`/`twzr_`, so both editions can run concurrently.
 
 The status bar shows context-aware key hints for whatever is selected. The essentials:
 
@@ -212,7 +206,6 @@ The status bar shows context-aware key hints for whatever is selected. The essen
 | `/` | Fuzzy-find and attach to any session |
 | `f` | Toggle active-only filter (hide threads without live sessions) |
 | `v` | Toggle agents view |
-| `Tab` | Focus the notes panel |
 | `q` | Quit |
 
 ### Organize
@@ -282,15 +275,9 @@ hide       = "H"
 show_hidden = "u"
 toggle_active_filter = "f"
 
-[keys.agents]
-toggle_view = "v"
-
-[keys.notes]
-scroll_down = "j"
-scroll_up   = "k"
 ```
 
-**Modes:** `normal`, `agents`, `notes`, `finder`, `input`, `confirm`.
+**Modes:** `normal`, `agents`, `finder`, `input`, `confirm`.
 
 **Key syntax:** single chars (`"q"`, `"A"`), modifier prefixes (`"ctrl+j"`, `"alt+x"`), named keys (`"enter"`, `"esc"`, `"space"`, `"tab"`, `"backspace"`, `"up"`, `"down"`, `"left"`, `"right"`).
 

@@ -58,7 +58,7 @@ fn write_atomic(path: &Path, data: &str) -> io::Result<()> {
 }
 
 /// Create the config dir if needed and keep it private (0700 on Unix) —
-/// notes and state can contain sensitive project details.
+/// State can contain sensitive project details.
 fn ensure_config_dir() -> io::Result<PathBuf> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;

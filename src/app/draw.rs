@@ -64,7 +64,7 @@ impl App {
             Vec::new()
         };
 
-        // Pre-compute sidebar data: resolve which note or preview to display.
+        // Pre-compute agent preview data.
         let selected_item = match self.view_mode {
             ViewMode::Tree => self.state.resolve_selection(self.tree_state.selected()),
             ViewMode::Agents => flat_agents
@@ -73,45 +73,15 @@ impl App {
                 .unwrap_or(SelectedItem::None),
         };
         let show_preview = self.preview_content.is_some() && matches!(selected_item, SelectedItem::Agent(..));
-        let sidebar_info: Option<String> = match &selected_item {
-            SelectedItem::None => None,
-            SelectedItem::Collection(idx) => {
-                Some(self.state.collections[*idx].name.clone())
-            }
-            SelectedItem::Thread(col_idx, thread_idx) => {
-                Some(self.state.collections[*col_idx].threads[*thread_idx].name.clone())
-            }
-            SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                let thread = &self.state.collections[*col_idx].threads[*thread_idx];
-                let sessions = self.state.sessions_for_thread(thread.id);
-                sessions.get(*sess_idx).map(|s| s.display_name.clone())
-            }
-            SelectedItem::Worktree(col_idx, thread_idx, wt_idx) => {
-                let thread = &self.state.collections[*col_idx].threads[*thread_idx];
-                let worktrees = self.state.worktrees_for_thread(thread.id);
-                worktrees.get(*wt_idx).map(|w| w.display_name.clone())
-            }
+        let sidebar_title = match &selected_item {
             SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
                 self.state.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
                     .map(|a| format!("{} {}", a.agent_type.icon(), a.display_name))
+                    .unwrap_or_default()
             }
+            _ => String::new(),
         };
-        let show_sidebar = sidebar_info.is_some() && is_normal;
-        let sidebar_title = sidebar_info.unwrap_or_default();
-        let notes_focused = matches!(self.focus, Focus::Notes);
-
-        let editor_scroll = self.note_editor.scroll_offset;
-        let editor_is_empty = self.note_editor.is_empty();
-        let editor_has_target = self.note_editor.target_key.is_some();
-
-        let rendered_note = if show_sidebar && !editor_is_empty {
-            // Cheap Rc clone of the cached render — no per-frame deep copy,
-            // no terminal-size syscall (width tracked via resize events).
-            let render_width = (self.last_width * 2 / 5).saturating_sub(2);
-            Some(self.md_renderer.render(&self.note_editor.content, render_width))
-        } else {
-            None
-        };
+        let show_sidebar = show_preview && is_normal;
 
         terminal.draw(|frame| {
             let area = frame.area();
@@ -195,11 +165,7 @@ impl App {
                         .alignment(Alignment::Center);
                     frame.render_widget(paragraph, tree_area);
                 } else {
-                    let tree_highlight = if matches!(self.focus, Focus::Notes) {
-                        self.theme.highlight_unfocused
-                    } else {
-                        self.theme.highlight
-                    };
+                    let tree_highlight = self.theme.highlight;
 
                     let Ok(tree) = Tree::new(&items) else {
                         // Duplicate identifiers (should never happen) — skip the
@@ -230,40 +196,26 @@ impl App {
                 }
             }
 
-            // Sidebar: agent preview or notes
-            if let Some(sb_area) = sidebar_area {
-                if show_preview {
-                    let title = format!("Preview: {}", sidebar_title);
-                    // Pin to bottom: scroll so the last screenful is visible.
-                    // Inner height = area minus 2 for top/bottom border.
-                    let visible = sb_area.height.saturating_sub(2) as usize;
-                    let scroll = self.preview_content.as_ref()
-                        .map_or(0, |t| t.lines.len().saturating_sub(visible));
-                    agent_preview::render(
-                        frame,
-                        &agent_preview::PreviewState {
-                            content: self.preview_content.as_ref(),
-                            scroll_offset: scroll,
-                            title: &title,
-                        },
-                        sb_area,
-                        &self.theme,
-                    );
-                } else {
-                    let title = format!("Notes: {}", sidebar_title);
-                    notes_sidebar::render(
-                        frame,
-                        &notes_sidebar::SidebarState {
-                            rendered: rendered_note.as_deref(),
-                            scroll_offset: editor_scroll,
-                            is_empty: editor_is_empty,
-                            title: &title,
-                            focused: notes_focused && editor_has_target,
-                        },
-                        sb_area,
-                        &self.theme,
-                    );
-                }
+            // Agent preview sidebar
+            if let Some(sb_area) = sidebar_area
+                && show_preview
+            {
+                let title = format!("Preview: {}", sidebar_title);
+                // Pin to bottom: scroll so the last screenful is visible.
+                // Inner height = area minus 2 for top/bottom border.
+                let visible = sb_area.height.saturating_sub(2) as usize;
+                let scroll = self.preview_content.as_ref()
+                    .map_or(0, |t| t.lines.len().saturating_sub(visible));
+                agent_preview::render(
+                    frame,
+                    &agent_preview::PreviewState {
+                        content: self.preview_content.as_ref(),
+                        scroll_offset: scroll,
+                        title: &title,
+                    },
+                    sb_area,
+                    &self.theme,
+                );
             }
 
             // Separator between tree and recent bar
@@ -424,9 +376,6 @@ impl App {
                         return StatusContext::AgentsViewSlotAssign { target_path };
                     }
                     return StatusContext::AgentsView;
-                }
-                if matches!(self.focus, Focus::Notes) {
-                    return StatusContext::Notes;
                 }
                 let marked_count = self.marked_session_names().len();
                 if marked_count > 0 {
