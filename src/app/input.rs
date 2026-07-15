@@ -13,14 +13,25 @@ impl App {
             self.mode = Mode::Help { scroll: 0 };
             return Ok(());
         }
+        if normal_action == Some(Action::ToggleGrid) {
+            self.view_mode = if matches!(self.view_mode, ViewMode::AgentGrid) {
+                ViewMode::Tree
+            } else {
+                ViewMode::AgentGrid
+            };
+            self.last_grid_refresh = Instant::now()
+                .checked_sub(GRID_REFRESH_INTERVAL)
+                .unwrap_or_else(Instant::now);
+            return Ok(());
+        }
         if normal_action == Some(Action::ToggleView) {
             self.view_mode = match self.view_mode {
                 ViewMode::Tree => ViewMode::Agents,
-                ViewMode::Agents => ViewMode::Tree,
+                ViewMode::Agents | ViewMode::AgentGrid => ViewMode::Tree,
             };
             return Ok(());
         }
-        if matches!(self.view_mode, ViewMode::Agents) {
+        if matches!(self.view_mode, ViewMode::Agents | ViewMode::AgentGrid) {
             return self.handle_agents_view_key(code, modifiers, terminal);
         }
         if self.handle_jump_key(code, modifiers) {
@@ -52,7 +63,12 @@ impl App {
         }
     }
 
-    pub(super) fn handle_agents_jump_key(&mut self, code: KeyCode, modifiers: KeyModifiers, agent_count: usize) -> bool {
+    pub(super) fn handle_agents_jump_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        agent_count: usize,
+    ) -> bool {
         match self.keymap.resolve(KeyMode::Agents, code, modifiers) {
             Some(Action::JumpTop) if self.jump_to_top_pending => {
                 self.jump_to_top_pending = false;
@@ -121,8 +137,18 @@ impl App {
         paths
     }
 
-    pub(super) fn push_visible_thread_children(&self, paths: &mut Vec<Vec<String>>, thread_path: &[String], thread_id: uuid::Uuid) {
-        for session in self.state.active_sessions.iter().filter(|s| s.thread_id == thread_id) {
+    pub(super) fn push_visible_thread_children(
+        &self,
+        paths: &mut Vec<Vec<String>>,
+        thread_path: &[String],
+        thread_id: uuid::Uuid,
+    ) {
+        for session in self
+            .state
+            .active_sessions
+            .iter()
+            .filter(|s| s.thread_id == thread_id)
+        {
             let mut session_path = thread_path.to_vec();
             session_path.push(session.tmux_session_name.clone());
             paths.push(session_path.clone());
@@ -188,21 +214,33 @@ impl App {
         if self.tree_state.selected().is_empty() {
             return;
         }
-        if matches!(self.state.resolve_selection(self.tree_state.selected()), SelectedItem::None) {
+        if matches!(
+            self.state.resolve_selection(self.tree_state.selected()),
+            SelectedItem::None
+        ) {
             let next = self.next_visible_path(self.tree_state.selected());
             self.tree_state.select(next);
         }
     }
 
-    pub(super) fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
+    pub(super) fn handle_normal_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         let action = match self.keymap.resolve(KeyMode::Normal, code, modifiers) {
             Some(a) => a,
             None => return Ok(()),
         };
         match action {
             Action::Quit => self.running = false,
-            Action::MoveDown => { self.tree_state.key_down(); }
-            Action::MoveUp => { self.tree_state.key_up(); }
+            Action::MoveDown => {
+                self.tree_state.key_down();
+            }
+            Action::MoveUp => {
+                self.tree_state.key_up();
+            }
             Action::MoveLeft => {
                 if self.tree_state.key_left() {
                     self.refresh_worktree_sessions();
@@ -219,7 +257,9 @@ impl App {
                 }
             }
             Action::Enter => self.start_enter(terminal)?,
-            Action::Deselect => { self.tree_state.select(Vec::new()); }
+            Action::Deselect => {
+                self.tree_state.select(Vec::new());
+            }
             Action::Add => self.start_add(),
             Action::AddCollection => {
                 self.mode = Mode::Input {
@@ -239,7 +279,8 @@ impl App {
             Action::ToggleActiveFilter => self.toggle_active_filter(),
             Action::Help => self.mode = Mode::Help { scroll: 0 },
             Action::Finder => {
-                if self.state.active_sessions.is_empty() && self.state.worktree_sessions.is_empty() {
+                if self.state.active_sessions.is_empty() && self.state.worktree_sessions.is_empty()
+                {
                     self.set_flash("No sessions or worktrees");
                     return Ok(());
                 }
@@ -259,7 +300,11 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn attach_recent(&mut self, index: usize, terminal: &mut Tui) -> std::io::Result<()> {
+    pub(super) fn attach_recent(
+        &mut self,
+        index: usize,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         let recent = self.state.recent_sessions(5);
         if let Some(session) = recent.get(index) {
             let name = session.tmux_session_name.clone();
@@ -271,7 +316,12 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn handle_agents_view_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
+    pub(super) fn handle_agents_view_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         let agents = self.state.all_agents_flat();
 
         if self.handle_agents_jump_key(code, modifiers, agents.len()) {
@@ -286,7 +336,8 @@ impl App {
         // (digit), cancels silently (Esc), or cancels and falls through (any other key).
         if let Some(pending) = self.pin_assign_pending.take() {
             if let KeyCode::Char(c) = code
-                && c.is_ascii_digit() {
+                && c.is_ascii_digit()
+            {
                     let slot: u8 = c.to_digit(10).unwrap() as u8;
                     let snapshot = agents.iter().find(|a| a.pane_id == pending);
                     let already_in_slot = snapshot
@@ -294,11 +345,13 @@ impl App {
                         .map(|s| s == slot)
                         .unwrap_or(false);
                     let path = snapshot.map(|a| {
-                        format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name)
+                    format!(
+                        "{} / {} / {}",
+                        a.thread_name, a.session_display_name, a.agent_display_name
+                    )
                     });
                     self.state.pin_agent_to(&pending, slot);
-                    if !already_in_slot
-                        && let Some(p) = path {
+                if !already_in_slot && let Some(p) = path {
                             self.set_flash(&format!("Pin {}: {}", slot, p));
                         }
                     self.reanchor_agent_cursor(Some(pending));
@@ -311,13 +364,32 @@ impl App {
         }
 
         let action = self.keymap.resolve(KeyMode::Agents, code, modifiers);
+        let grid_columns = usize::from((self.last_width / 42).max(1));
         match action {
             Some(Action::MoveDown) => {
+                if !agents.is_empty() {
+                    let step = if matches!(self.view_mode, ViewMode::AgentGrid) {
+                        grid_columns
+                    } else {
+                        1
+                    };
+                    self.agent_list_cursor = (self.agent_list_cursor + step).min(agents.len() - 1);
+                }
+            }
+            Some(Action::MoveUp) => {
+                let step = if matches!(self.view_mode, ViewMode::AgentGrid) {
+                    grid_columns
+                } else {
+                    1
+                };
+                self.agent_list_cursor = self.agent_list_cursor.saturating_sub(step);
+            }
+            Some(Action::MoveRight) if matches!(self.view_mode, ViewMode::AgentGrid) => {
                 if !agents.is_empty() {
                     self.agent_list_cursor = (self.agent_list_cursor + 1).min(agents.len() - 1);
                 }
             }
-            Some(Action::MoveUp) => {
+            Some(Action::MoveLeft) if matches!(self.view_mode, ViewMode::AgentGrid) => {
                 self.agent_list_cursor = self.agent_list_cursor.saturating_sub(1);
             }
             Some(Action::Enter) => {
@@ -338,7 +410,10 @@ impl App {
                     let snapshot = agents.get(self.agent_list_cursor);
                     let already_pinned = snapshot.map(|a| a.pin_slot.is_some()).unwrap_or(false);
                     let path = snapshot.map(|a| {
-                        format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name)
+                        format!(
+                            "{} / {} / {}",
+                            a.thread_name, a.session_display_name, a.agent_display_name
+                        )
                     });
                     if already_pinned {
                         self.state.unpin_agent(&pane_id);
@@ -366,7 +441,8 @@ impl App {
             _ => {
                 // Plain digit → jump cursor to that pinned slot (Enter still attaches)
                 if let KeyCode::Char(c) = code
-                    && c.is_ascii_digit() {
+                    && c.is_ascii_digit()
+                {
                         let slot: u8 = c.to_digit(10).unwrap() as u8;
                         if let Some(agent) = self.state.agent_by_pin_slot(slot) {
                             let target_id = agent.pane_id.clone();
@@ -389,7 +465,8 @@ impl App {
             return;
         }
         if let Some(id) = anchor_pane_id
-            && let Some(idx) = agents.iter().position(|a| a.pane_id == id) {
+            && let Some(idx) = agents.iter().position(|a| a.pane_id == id)
+        {
                 self.agent_list_cursor = idx;
                 return;
             }
@@ -400,7 +477,7 @@ impl App {
     pub(super) fn resolve_current_selected(&self) -> SelectedItem {
         match self.view_mode {
             ViewMode::Tree => self.state.resolve_selection(self.tree_state.selected()),
-            ViewMode::Agents => {
+            ViewMode::Agents | ViewMode::AgentGrid => {
                 let agents = self.state.all_agents_flat();
                 agents
                     .get(self.agent_list_cursor)
@@ -410,7 +487,12 @@ impl App {
         }
     }
 
-    pub(super) fn handle_input_key(&mut self, code: KeyCode, modifiers: KeyModifiers, terminal: &mut Tui) -> std::io::Result<()> {
+    pub(super) fn handle_input_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         let action = self.keymap.resolve(KeyMode::Input, code, modifiers);
         match action {
             Some(Action::Cancel) => {
@@ -431,10 +513,18 @@ impl App {
                         KeyCode::Right => buffer.right(),
                         KeyCode::Home => buffer.home(),
                         KeyCode::End => buffer.end(),
-                        KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => buffer.home(),
-                        KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => buffer.end(),
-                        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => buffer.kill_to_start(),
-                        KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => buffer.insert(c),
+                        KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+                            buffer.home()
+                        }
+                        KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+                            buffer.end()
+                        }
+                        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                            buffer.kill_to_start()
+                        }
+                        KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                            buffer.insert(c)
+                        }
                         _ => {}
                     }
                 }
@@ -451,7 +541,8 @@ impl App {
                 // so a double-tapped Enter can't wipe a collection/thread.
                 if code == KeyCode::Enter
                     && let Mode::Confirm { purpose } = &self.mode
-                        && purpose.requires_explicit_yes() {
+                    && purpose.requires_explicit_yes()
+                {
                             return;
                         }
                 self.execute_confirm();
@@ -496,14 +587,14 @@ impl App {
             | SelectedItem::Thread(idx, _)
             | SelectedItem::Session(idx, _, _)
             | SelectedItem::Worktree(idx, _, _)
-            | SelectedItem::Agent(idx, _, _, _) => {
-                InputPurpose::AddThread {
+            | SelectedItem::Agent(idx, _, _, _) => InputPurpose::AddThread {
                     collection_idx: idx,
-                }
-            }
+            },
             SelectedItem::None => {
                 let col_idx = self.state.ensure_root_collection();
-                InputPurpose::AddThread { collection_idx: col_idx }
+                InputPurpose::AddThread {
+                    collection_idx: col_idx,
+                }
             }
         };
         self.mode = Mode::Input {
@@ -530,7 +621,11 @@ impl App {
         };
         let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
         self.mode = Mode::Input {
-            purpose: InputPurpose::NewWorktree { thread_id, repo, worktree_dir },
+            purpose: InputPurpose::NewWorktree {
+                thread_id,
+                repo,
+                worktree_dir,
+            },
             buffer: InputBuffer::default(),
         };
     }
@@ -554,12 +649,17 @@ impl App {
                 return Some((repo, worktree_dir));
             }
         }
-        self.auto_worktree_repo(col_idx, thread_idx).map(|repo| (repo, None))
+        self.auto_worktree_repo(col_idx, thread_idx)
+            .map(|repo| (repo, None))
     }
 
     /// Select the freshly created worktree row for `thread_id` by its path,
     /// expanding the thread so it is visible.
-    pub(super) fn select_worktree_by_path(&mut self, thread_id: uuid::Uuid, path: &std::path::Path) {
+    pub(super) fn select_worktree_by_path(
+        &mut self,
+        thread_id: uuid::Uuid,
+        path: &std::path::Path,
+    ) {
         let Some((col_idx, thread_idx)) = self.find_thread_indices_by_id(thread_id) else {
             return;
         };
@@ -591,9 +691,10 @@ impl App {
         };
         let purpose = match selected {
             SelectedItem::Collection(idx) => InputPurpose::RenameCollection { idx },
-            SelectedItem::Thread(col_idx, thread_idx) => {
-                InputPurpose::RenameThread { col_idx, thread_idx }
-            }
+            SelectedItem::Thread(col_idx, thread_idx) => InputPurpose::RenameThread {
+                col_idx,
+                thread_idx,
+            },
             SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
                 let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
                 let sessions = self.state.sessions_for_thread(thread_id);
@@ -607,8 +708,13 @@ impl App {
                 }
             }
             SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
-                match self.state.resolve_agent(col_idx, thread_idx, sess_idx, agent_idx) {
-                    Some(agent) => InputPurpose::RenameAgent { pane_id: agent.pane_id.clone() },
+                match self
+                    .state
+                    .resolve_agent(col_idx, thread_idx, sess_idx, agent_idx)
+                {
+                    Some(agent) => InputPurpose::RenameAgent {
+                        pane_id: agent.pane_id.clone(),
+                    },
                     None => return,
                 }
             }
@@ -620,11 +726,23 @@ impl App {
         };
     }
 
-    pub(super) fn worktree_for_active_session_selection(&self, col_idx: usize, thread_idx: usize, sess_idx: usize) -> Option<&WorktreeSession> {
-        let thread_id = self.state.collections.get(col_idx)?.threads.get(thread_idx)?.id;
+    pub(super) fn worktree_for_active_session_selection(
+        &self,
+        col_idx: usize,
+        thread_idx: usize,
+        sess_idx: usize,
+    ) -> Option<&WorktreeSession> {
+        let thread_id = self
+            .state
+            .collections
+            .get(col_idx)?
+            .threads
+            .get(thread_idx)?
+            .id;
         let sessions = self.state.sessions_for_thread(thread_id);
         let session = sessions.get(sess_idx)?;
-        self.state.find_worktree_by_tmux_name(&session.tmux_session_name)
+        self.state
+            .find_worktree_by_tmux_name(&session.tmux_session_name)
     }
 
     pub(super) fn hide_selected(&mut self) {
@@ -633,7 +751,9 @@ impl App {
         let selected = self.state.resolve_selection(&selected_path);
         let hidden = match selected {
             SelectedItem::Collection(idx) => self.state.hide_collection(idx),
-            SelectedItem::Thread(col_idx, thread_idx) => self.state.hide_thread(col_idx, thread_idx),
+            SelectedItem::Thread(col_idx, thread_idx) => {
+                self.state.hide_thread(col_idx, thread_idx)
+            }
             SelectedItem::Session(..)
             | SelectedItem::Worktree(..)
             | SelectedItem::Agent(..)
@@ -693,7 +813,10 @@ impl App {
                     self.set_flash("Cannot delete main worktree");
                     return;
                 }
-                if self.pending_worktree_deletes.contains_key(&worktree.tmux_session_name) {
+                if self
+                    .pending_worktree_deletes
+                    .contains_key(&worktree.tmux_session_name)
+                {
                     self.set_flash("Worktree delete already running");
                     return;
                 }
@@ -706,7 +829,9 @@ impl App {
                 }
             }
             SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                let Some(worktree) = self.worktree_for_active_session_selection(*col_idx, *thread_idx, *sess_idx) else {
+                let Some(worktree) =
+                    self.worktree_for_active_session_selection(*col_idx, *thread_idx, *sess_idx)
+                else {
                     let hint = self.keymap.key_hint(KeyMode::Normal, Action::KillSession);
                     self.set_flash(&format!("Use {} to kill sessions", hint));
                     return;
@@ -715,7 +840,10 @@ impl App {
                     self.set_flash("Cannot delete main worktree");
                     return;
                 }
-                if self.pending_worktree_deletes.contains_key(&worktree.tmux_session_name) {
+                if self
+                    .pending_worktree_deletes
+                    .contains_key(&worktree.tmux_session_name)
+                {
                     self.set_flash("Worktree delete already running");
                     return;
                 }
@@ -736,7 +864,9 @@ impl App {
         let marked = self.marked_session_names();
         if !marked.is_empty() {
             self.mode = Mode::Confirm {
-                purpose: ConfirmPurpose::KillMarkedSessions { session_names: marked },
+                purpose: ConfirmPurpose::KillMarkedSessions {
+                    session_names: marked,
+                },
             };
             return;
         }
@@ -744,12 +874,17 @@ impl App {
         let selected = self.state.resolve_selection(self.tree_state.selected());
         match selected {
             SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                if let Some(worktree) = self.worktree_for_active_session_selection(col_idx, thread_idx, sess_idx) {
+                if let Some(worktree) =
+                    self.worktree_for_active_session_selection(col_idx, thread_idx, sess_idx)
+                {
                     if worktree.is_main {
                         self.set_flash("Cannot delete main worktree");
                         return;
                     }
-                    if self.pending_worktree_deletes.contains_key(&worktree.tmux_session_name) {
+                    if self
+                        .pending_worktree_deletes
+                        .contains_key(&worktree.tmux_session_name)
+                    {
                         self.set_flash("Worktree delete already running");
                         return;
                     }
@@ -809,7 +944,9 @@ impl App {
         let session_name = session.tmux_session_name.clone();
         let session_label = session.display_name.clone();
 
-        let entries: Vec<(String, String)> = self.state.all_threads_display()
+        let entries: Vec<(String, String)> = self
+            .state
+            .all_threads_display()
             .into_iter()
             .filter(|(ci, ti, _)| !(*ci == col_idx && *ti == thread_idx))
             .map(|(ci, ti, path)| (format!("{}:{}", ci, ti), path))
@@ -833,21 +970,27 @@ impl App {
             SelectedItem::Collection(..) => {}
             SelectedItem::Thread(col_idx, thread_idx) => {
                 self.mode = Mode::Input {
-                    purpose: InputPurpose::NewSession { col_idx, thread_idx },
+                    purpose: InputPurpose::NewSession {
+                        col_idx,
+                        thread_idx,
+                    },
                     buffer: InputBuffer::default(),
                 };
             }
             SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                let sessions = self.state.sessions_for_thread(
-                    self.state.collections[col_idx].threads[thread_idx].id,
-                );
+                let sessions = self
+                    .state
+                    .sessions_for_thread(self.state.collections[col_idx].threads[thread_idx].id);
                 if let Some(session) = sessions.get(sess_idx) {
                     let name = session.tmux_session_name.clone();
                     self.attach_to_session(&name, terminal)?;
                 }
             }
             SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
-                if let Some(agent) = self.state.resolve_agent(col_idx, thread_idx, sess_idx, agent_idx) {
+                if let Some(agent) = self
+                    .state
+                    .resolve_agent(col_idx, thread_idx, sess_idx, agent_idx)
+                {
                     let session_name = agent.tmux_session_name.clone();
                     let window_index = agent.window_index;
                     let pane_id = agent.pane_id.clone();
@@ -872,7 +1015,10 @@ impl App {
             SelectedItem::None => {
                 let (col_idx, thread_idx) = self.state.ensure_general_thread();
                 self.mode = Mode::Input {
-                    purpose: InputPurpose::NewSession { col_idx, thread_idx },
+                    purpose: InputPurpose::NewSession {
+                        col_idx,
+                        thread_idx,
+                    },
                     buffer: InputBuffer::default(),
                 };
             }
@@ -900,11 +1046,19 @@ impl App {
         };
         worktrees.sort_by(|a, b| a.display_name.cmp(&b.display_name));
         entries.extend(worktrees.into_iter().filter_map(|w| {
-            if self.state.active_sessions.iter().any(|s| s.tmux_session_name == w.tmux_session_name) {
+            if self
+                .state
+                .active_sessions
+                .iter()
+                .any(|s| s.tmux_session_name == w.tmux_session_name)
+            {
                 return None;
             }
             let path = self.state.worktree_display_path(w)?;
-            Some((w.tmux_session_name.clone(), format!("{}  {}", path, w.path.display())))
+            Some((
+                w.tmux_session_name.clone(),
+                format!("{}  {}", path, w.path.display()),
+            ))
         }));
 
         if entries.is_empty() {
@@ -928,7 +1082,8 @@ impl App {
         match action {
             Some(Action::MoveDown) => {
                 if let Mode::Finder { state } = &mut self.mode
-                    && !state.filtered.is_empty() {
+                    && !state.filtered.is_empty()
+                {
                         state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
                     }
             }
@@ -943,7 +1098,8 @@ impl App {
             Some(Action::Confirm) => {
                 let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
                 if let Mode::Finder { state } = old_mode
-                    && let Some(&idx) = state.filtered.get(state.cursor) {
+                    && let Some(&idx) = state.filtered.get(state.cursor)
+                {
                         let name = state.all_entries[idx].0.clone();
                         self.open_session_or_worktree(&name, terminal)?;
                         if let Some(path) = self.state.session_tree_path(&name) {
@@ -960,7 +1116,8 @@ impl App {
             _ => {
                 // Character input for search query
                 if let KeyCode::Char(c) = code
-                    && let Mode::Finder { state } = &mut self.mode {
+                    && let Mode::Finder { state } = &mut self.mode
+                {
                         state.query.push(c);
                         state.update_filter();
                     }
@@ -980,7 +1137,8 @@ impl App {
 
         if nav_down {
             if let Mode::ThreadPicker { state, .. } = &mut self.mode
-                && !state.filtered.is_empty() {
+                && !state.filtered.is_empty()
+            {
                     state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
                 }
         } else if nav_up {
@@ -1015,17 +1173,33 @@ impl App {
 
     pub(super) fn execute_move_session(&mut self) {
         let old_mode = std::mem::replace(&mut self.mode, Mode::Normal);
-        if let Mode::ThreadPicker { state, session_name, session_label } = old_mode
-            && let Some(&idx) = state.filtered.get(state.cursor) {
+        if let Mode::ThreadPicker {
+            state,
+            session_name,
+            session_label,
+        } = old_mode
+            && let Some(&idx) = state.filtered.get(state.cursor)
+        {
                 let key = &state.all_entries[idx].0;
                 let dest_display = state.all_entries[idx].1.clone();
 
                 let parts: Vec<&str> = key.split(':').collect();
-                if parts.len() != 2 { return; }
-                let dest_col: usize = match parts[0].parse() { Ok(v) => v, Err(_) => return };
-                let dest_thread: usize = match parts[1].parse() { Ok(v) => v, Err(_) => return };
+            if parts.len() != 2 {
+                return;
+            }
+            let dest_col: usize = match parts[0].parse() {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let dest_thread: usize = match parts[1].parse() {
+                Ok(v) => v,
+                Err(_) => return,
+            };
 
-                if let Some(new_tmux_name) = self.state.make_session_name(dest_col, dest_thread, &session_label) {
+            if let Some(new_tmux_name) =
+                self.state
+                    .make_session_name(dest_col, dest_thread, &session_label)
+            {
                     if let Err(err) = mux::rename_session(&session_name, &new_tmux_name) {
                         self.set_error(format!("Failed to move session: {}", err));
                         return;
@@ -1072,15 +1246,20 @@ impl App {
                         .iter()
                         .enumerate()
                         .flat_map(|(pi, thread)| {
-                            self.state.sessions_for_thread(thread.id)
+                            self.state
+                                .sessions_for_thread(thread.id)
                                 .into_iter()
-                                .map(move |s| (s.tmux_session_name.clone(), s.display_name.clone(), pi))
+                                .map(move |s| {
+                                    (s.tmux_session_name.clone(), s.display_name.clone(), pi)
+                                })
                         })
                         .collect();
                     self.state.rename_collection(idx, trimmed);
                     let mut rename_errors = Vec::new();
                     for (old_name, label, thread_idx) in &old_sessions {
-                        if let Some(new_name) = self.state.make_session_name(idx, *thread_idx, label) {
+                        if let Some(new_name) =
+                            self.state.make_session_name(idx, *thread_idx, label)
+                        {
                             match mux::rename_session(old_name, &new_name) {
                                 Ok(()) => {
                                     if self.marked_sessions.remove(old_name) {
@@ -1096,15 +1275,23 @@ impl App {
                     if rename_errors.is_empty() {
                         self.set_flash("Collection renamed");
                     } else {
-                        self.set_error(format!("Collection renamed, but tmux rename failed:\n{}", rename_errors.join("\n")));
+                        self.set_error(format!(
+                            "Collection renamed, but tmux rename failed:\n{}",
+                            rename_errors.join("\n")
+                        ));
                     }
                 }
-                InputPurpose::RenameThread { col_idx, thread_idx } => {
+                InputPurpose::RenameThread {
+                    col_idx,
+                    thread_idx,
+                } => {
                     // Collect old tmux session names before the rename changes the prefix.
                     let old_sessions: Vec<(String, String)> = self.state.collections[col_idx]
-                        .threads.get(thread_idx)
+                        .threads
+                        .get(thread_idx)
                         .map(|thread| {
-                            self.state.sessions_for_thread(thread.id)
+                            self.state
+                                .sessions_for_thread(thread.id)
                                 .into_iter()
                                 .map(|s| (s.tmux_session_name.clone(), s.display_name.clone()))
                                 .collect()
@@ -1113,7 +1300,9 @@ impl App {
                     self.state.rename_thread(col_idx, thread_idx, trimmed);
                     let mut rename_errors = Vec::new();
                     for (old_name, label) in &old_sessions {
-                        if let Some(new_name) = self.state.make_session_name(col_idx, thread_idx, label) {
+                        if let Some(new_name) =
+                            self.state.make_session_name(col_idx, thread_idx, label)
+                        {
                             match mux::rename_session(old_name, &new_name) {
                                 Ok(()) => {
                                     if self.marked_sessions.remove(old_name) {
@@ -1129,11 +1318,19 @@ impl App {
                     if rename_errors.is_empty() {
                         self.set_flash("Thread renamed");
                     } else {
-                        self.set_error(format!("Thread renamed, but tmux rename failed:\n{}", rename_errors.join("\n")));
+                        self.set_error(format!(
+                            "Thread renamed, but tmux rename failed:\n{}",
+                            rename_errors.join("\n")
+                        ));
                     }
                 }
-                InputPurpose::NewSession { col_idx, thread_idx } => {
-                    if let Some(session_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
+                InputPurpose::NewSession {
+                    col_idx,
+                    thread_idx,
+                } => {
+                    if let Some(session_name) =
+                        self.state.make_session_name(col_idx, thread_idx, &trimmed)
+                    {
                         let start_dir = match self.resolve_start_dir(col_idx, thread_idx) {
                             Ok(dir) => dir,
                             Err(msg) => {
@@ -1150,7 +1347,11 @@ impl App {
                         self.set_flash("Session launched");
                     }
                 }
-                InputPurpose::NewWorktree { thread_id, repo, worktree_dir } => {
+                InputPurpose::NewWorktree {
+                    thread_id,
+                    repo,
+                    worktree_dir,
+                } => {
                     let branch = trimmed;
                     let path = worktrees::worktree_path(&repo, worktree_dir.as_deref(), &branch);
                     if path.exists() {
@@ -1161,7 +1362,8 @@ impl App {
                         self.set_flash("Worktree create already running");
                         return Ok(());
                     }
-                    self.pending_worktree_creates.insert(path.clone(), branch.clone());
+                    self.pending_worktree_creates
+                        .insert(path.clone(), branch.clone());
                     self.set_flash("Creating worktree…");
                     let tx = self.worktree_create_tx.clone();
                     std::thread::spawn(move || {
@@ -1174,8 +1376,14 @@ impl App {
                         });
                     });
                 }
-                InputPurpose::RenameSession { col_idx, thread_idx, old_tmux_name } => {
-                    if let Some(new_tmux_name) = self.state.make_session_name(col_idx, thread_idx, &trimmed) {
+                InputPurpose::RenameSession {
+                    col_idx,
+                    thread_idx,
+                    old_tmux_name,
+                } => {
+                    if let Some(new_tmux_name) =
+                        self.state.make_session_name(col_idx, thread_idx, &trimmed)
+                    {
                         match mux::rename_session(&old_tmux_name, &new_tmux_name) {
                             Ok(()) => {
                                 if self.marked_sessions.remove(&old_tmux_name) {
@@ -1191,7 +1399,10 @@ impl App {
                     }
                 }
                 InputPurpose::RenameAgent { pane_id } => {
-                    if let Some(agent) = self.state.agent_sessions.iter_mut()
+                    if let Some(agent) = self
+                        .state
+                        .agent_sessions
+                        .iter_mut()
                         .find(|a| a.pane_id == pane_id)
                     {
                         agent.display_name = trimmed;
@@ -1230,7 +1441,10 @@ impl App {
                     self.state.delete_collection(idx);
                     // Select the item that slid into this position, or the one before
                     // it, rather than always jumping to the first collection.
-                    let new_sel = self.state.collections.get(idx)
+                    let new_sel = self
+                        .state
+                        .collections
+                        .get(idx)
                         .or_else(|| self.state.collections.last())
                         .map(|c| vec![c.id.to_string()])
                         .unwrap_or_default();
@@ -1240,18 +1454,25 @@ impl App {
                     if kill_errors.is_empty() {
                         self.set_flash("Collection deleted");
                     } else {
-                        self.set_error(format!("Collection deleted, but killing sessions failed:\n{}", kill_errors.join("\n")));
+                        self.set_error(format!(
+                            "Collection deleted, but killing sessions failed:\n{}",
+                            kill_errors.join("\n")
+                        ));
                     }
                     }
-                ConfirmPurpose::DeleteThread { col_idx, thread_idx, .. } => {
+                ConfirmPurpose::DeleteThread {
+                    col_idx,
+                    thread_idx,
+                    ..
+                } => {
                     // Refresh first so active_sessions is current.
                     self.do_refresh_sessions();
                     let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
-                    let session_names: Vec<String> = self.state.sessions_for_thread(thread_id)
+                    let session_names: Vec<String> = self
+                        .state
+                        .sessions_for_thread(thread_id)
                         .iter()
-                        .map(|s| {
-                            s.tmux_session_name.clone()
-                        })
+                        .map(|s| s.tmux_session_name.clone())
                         .collect();
                     let mut kill_errors = Vec::new();
                     for name in session_names {
@@ -1264,7 +1485,9 @@ impl App {
                     // Select the thread that slid into this position, or the one
                     // before it, falling back to the collection itself.
                     let col = &self.state.collections[col_idx];
-                    let new_sel = col.threads.get(thread_idx)
+                    let new_sel = col
+                        .threads
+                        .get(thread_idx)
                         .or_else(|| col.threads.last())
                         .map(|p| vec![col.id.to_string(), p.id.to_string()])
                         .unwrap_or_else(|| vec![col.id.to_string()]);
@@ -1274,7 +1497,10 @@ impl App {
                     if kill_errors.is_empty() {
                         self.set_flash("Thread deleted");
                     } else {
-                        self.set_error(format!("Thread deleted, but killing sessions failed:\n{}", kill_errors.join("\n")));
+                        self.set_error(format!(
+                            "Thread deleted, but killing sessions failed:\n{}",
+                            kill_errors.join("\n")
+                        ));
                     }
                     }
                 ConfirmPurpose::KillSession { session_name } => {
@@ -1285,7 +1511,9 @@ impl App {
                     self.marked_sessions.remove(&session_name);
                     self.do_refresh_sessions();
                     // Move selection up to the parent thread.
-                    let parent: Vec<String> = self.tree_state.selected()
+                    let parent: Vec<String> = self
+                        .tree_state
+                        .selected()
                         .iter()
                         .rev()
                         .skip(1)
@@ -1295,7 +1523,11 @@ impl App {
                     self.tree_state.select(parent);
                     self.set_flash("Session killed");
                     }
-                ConfirmPurpose::KillAllSessions { col_idx, thread_idx, .. } => {
+                ConfirmPurpose::KillAllSessions {
+                    col_idx,
+                    thread_idx,
+                    ..
+                } => {
                     let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
                     let names: Vec<String> = self
                         .state
@@ -1323,7 +1555,10 @@ impl App {
                     if kill_errors.is_empty() {
                         self.set_flash("All sessions killed");
                     } else {
-                        self.set_error(format!("Killing sessions failed:\n{}", kill_errors.join("\n")));
+                        self.set_error(format!(
+                            "Killing sessions failed:\n{}",
+                            kill_errors.join("\n")
+                        ));
                     }
                     }
                 ConfirmPurpose::KillMarkedSessions { session_names } => {
@@ -1339,11 +1574,23 @@ impl App {
                     if kill_errors.is_empty() {
                         self.set_flash(&format!("Killed {} sessions", count));
                     } else {
-                        self.set_error(format!("Killing sessions failed:\n{}", kill_errors.join("\n")));
+                        self.set_error(format!(
+                            "Killing sessions failed:\n{}",
+                            kill_errors.join("\n")
+                        ));
                     }
                     }
-                ConfirmPurpose::DeleteWorktree { repo, path, name, tmux_session_name, kill_session } => {
-                    if self.pending_worktree_deletes.contains_key(&tmux_session_name) {
+                ConfirmPurpose::DeleteWorktree {
+                    repo,
+                    path,
+                    name,
+                    tmux_session_name,
+                    kill_session,
+                } => {
+                    if self
+                        .pending_worktree_deletes
+                        .contains_key(&tmux_session_name)
+                    {
                         self.set_flash("Worktree delete already running");
                         return;
                     }
@@ -1388,11 +1635,9 @@ impl App {
         } else {
             Some(col.name.as_str())
         };
-        let Some(spec) = config::resolve_start_dir_match(
-            &self.start_dir_configs,
-            collection,
-            &thread.name,
-        ) else {
+        let Some(spec) =
+            config::resolve_start_dir_match(&self.start_dir_configs, collection, &thread.name)
+        else {
             return Ok(None);
         };
 
@@ -1414,7 +1659,11 @@ impl App {
     }
 
     /// Launch a new tmux session with the given name and attach to it.
-    pub(super) fn launch_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
+    pub(super) fn launch_session(
+        &mut self,
+        session_name: &str,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         if let Err(err) = mux::new_session(session_name) {
             self.set_error(format!("Failed to create session: {}", err));
             return Ok(());
@@ -1423,7 +1672,12 @@ impl App {
     }
 
     /// Launch a new tmux session in a worktree directory and attach to it.
-    pub(super) fn launch_session_in_dir(&mut self, session_name: &str, cwd: PathBuf, terminal: &mut Tui) -> std::io::Result<()> {
+    pub(super) fn launch_session_in_dir(
+        &mut self,
+        session_name: &str,
+        cwd: PathBuf,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         if let Err(err) = mux::new_session_in_dir(session_name, &cwd) {
             self.set_error(format!("Failed to create session: {}", err));
             return Ok(());
@@ -1431,8 +1685,17 @@ impl App {
         self.attach_to_session(session_name, terminal)
     }
 
-    pub(super) fn open_session_or_worktree(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
-        if self.state.active_sessions.iter().any(|s| s.tmux_session_name == session_name) {
+    pub(super) fn open_session_or_worktree(
+        &mut self,
+        session_name: &str,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
+        if self
+            .state
+            .active_sessions
+            .iter()
+            .any(|s| s.tmux_session_name == session_name)
+        {
             return self.attach_to_session(session_name, terminal);
         }
 
@@ -1448,7 +1711,11 @@ impl App {
     }
 
     /// Attach or switch to a tmux session by name.
-    pub(super) fn attach_to_session(&mut self, session_name: &str, terminal: &mut Tui) -> std::io::Result<()> {
+    pub(super) fn attach_to_session(
+        &mut self,
+        session_name: &str,
+        terminal: &mut Tui,
+    ) -> std::io::Result<()> {
         if mux::is_inside() {
             match mux::switch_client(session_name) {
                 Ok(()) => self.running = false,
@@ -1482,14 +1749,25 @@ impl App {
                     if self.state.thread_is_hidden(col_idx, thread_idx) {
                         continue;
                     }
-                    if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
+                    if self
+                        .state
+                        .active_sessions
+                        .iter()
+                        .any(|s| s.thread_id == thread.id)
+                    {
                         all_paths.push(vec![thread.id.to_string()]);
                         // Also expand sessions that have agents
                         for session in &self.state.active_sessions {
                             if session.thread_id == thread.id
-                                && !self.state.agents_for_session(&session.tmux_session_name).is_empty()
+                                && !self
+                                    .state
+                                    .agents_for_session(&session.tmux_session_name)
+                                    .is_empty()
                             {
-                                all_paths.push(vec![thread.id.to_string(), session.tmux_session_name.clone()]);
+                                all_paths.push(vec![
+                                    thread.id.to_string(),
+                                    session.tmux_session_name.clone(),
+                                ]);
                             }
                         }
                     }
@@ -1503,12 +1781,20 @@ impl App {
                     if self.state.thread_is_hidden(col_idx, thread_idx) {
                         continue;
                     }
-                    if self.state.active_sessions.iter().any(|s| s.thread_id == thread.id) {
+                    if self
+                        .state
+                        .active_sessions
+                        .iter()
+                        .any(|s| s.thread_id == thread.id)
+                    {
                         all_paths.push(vec![col.id.to_string(), thread.id.to_string()]);
                         // Also expand sessions that have agents
                         for session in &self.state.active_sessions {
                             if session.thread_id == thread.id
-                                && !self.state.agents_for_session(&session.tmux_session_name).is_empty()
+                                && !self
+                                    .state
+                                    .agents_for_session(&session.tmux_session_name)
+                                    .is_empty()
                             {
                                 all_paths.push(vec![
                                     col.id.to_string(),
@@ -1523,7 +1809,9 @@ impl App {
         }
 
         let all_open = !all_paths.is_empty()
-            && all_paths.iter().all(|p| self.tree_state.opened().contains(p));
+            && all_paths
+                .iter()
+                .all(|p| self.tree_state.opened().contains(p));
 
         if all_open {
             self.tree_state.close_all();

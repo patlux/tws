@@ -3,26 +3,29 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime};
 
+use ansi_to_tui::IntoText;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ansi_to_tui::IntoText;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use tui_tree_widget::{Tree, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
-use crate::components::{agent_preview, agents_view, confirm_modal, error_modal, finder_modal, help_modal, input_modal, recent_bar, tree_view};
+use crate::components::{
+    agent_grid, agent_preview, agents_view, confirm_modal, error_modal, finder_modal, help_modal,
+    input_modal, recent_bar, tree_view,
+};
+use crate::config::keys::{Action, KeyMode, Keymap};
+use crate::config::{self, StartDirConfig, WorktreeConfig};
+use crate::core::model::{AgentSession, WorktreeSession, slugify};
 use crate::core::persistence;
 use crate::core::pi_status;
-use crate::core::model::{AgentSession, WorktreeSession, slugify};
 use crate::core::state::{AppState, FlatAgent, SelectedItem};
 use crate::event;
-use crate::config::{self, StartDirConfig, WorktreeConfig};
-use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::git::worktrees::{self, DiscoverOptions};
 use crate::theme::Theme;
-use tws_mux as mux;
 use crate::tui::{self, Tui};
+use tws_mux as mux;
 
 mod draw;
 mod input;
@@ -92,11 +95,25 @@ impl InputBuffer {
 /// What the input modal is being used for.
 enum InputPurpose {
     AddCollection,
-    AddThread { collection_idx: usize },
-    RenameCollection { idx: usize },
-    RenameThread { col_idx: usize, thread_idx: usize },
-    NewSession { col_idx: usize, thread_idx: usize },
-    NewWorktree { thread_id: uuid::Uuid, repo: PathBuf, worktree_dir: Option<PathBuf> },
+    AddThread {
+        collection_idx: usize,
+    },
+    RenameCollection {
+        idx: usize,
+    },
+    RenameThread {
+        col_idx: usize,
+        thread_idx: usize,
+    },
+    NewSession {
+        col_idx: usize,
+        thread_idx: usize,
+    },
+    NewWorktree {
+        thread_id: uuid::Uuid,
+        repo: PathBuf,
+        worktree_dir: Option<PathBuf>,
+    },
     RenameSession {
         col_idx: usize,
         thread_idx: usize,
@@ -109,12 +126,33 @@ enum InputPurpose {
 
 /// What the confirm modal is confirming.
 enum ConfirmPurpose {
-    DeleteCollection { idx: usize, name: String },
-    DeleteThread { col_idx: usize, thread_idx: usize, name: String },
-    KillSession { session_name: String },
-    KillAllSessions { col_idx: usize, thread_idx: usize, thread_name: String },
-    KillMarkedSessions { session_names: Vec<String> },
-    DeleteWorktree { repo: PathBuf, path: PathBuf, name: String, tmux_session_name: String, kill_session: bool },
+    DeleteCollection {
+        idx: usize,
+        name: String,
+    },
+    DeleteThread {
+        col_idx: usize,
+        thread_idx: usize,
+        name: String,
+    },
+    KillSession {
+        session_name: String,
+    },
+    KillAllSessions {
+        col_idx: usize,
+        thread_idx: usize,
+        thread_name: String,
+    },
+    KillMarkedSessions {
+        session_names: Vec<String>,
+    },
+    DeleteWorktree {
+        repo: PathBuf,
+        path: PathBuf,
+        name: String,
+        tmux_session_name: String,
+        kill_session: bool,
+    },
 }
 
 impl ConfirmPurpose {
@@ -152,13 +190,22 @@ struct WorktreeCreateResult {
 /// worktree discoveries per thread (name-building happens on the main thread).
 struct SessionsPayload {
     live: Vec<(String, i64)>,
-    discoveries: Vec<(uuid::Uuid, PathBuf, DiscoverOptions, Vec<worktrees::DiscoveredWorktree>)>,
+    discoveries: Vec<(
+        uuid::Uuid,
+        PathBuf,
+        DiscoverOptions,
+        Vec<worktrees::DiscoveredWorktree>,
+    )>,
 }
 
 /// Captured pane content converted off-thread, tagged with its pane id.
 struct PreviewResult {
     pane_id: String,
     text: Text<'static>,
+}
+
+struct GridPreviewResult {
+    captures: HashMap<String, Text<'static>>,
 }
 
 /// Result of a background refresh or agent-only scan.
@@ -223,6 +270,7 @@ impl FinderState {
 enum ViewMode {
     Tree,
     Agents,
+    AgentGrid,
 }
 
 enum Mode {
@@ -269,8 +317,12 @@ pub struct App {
     last_preview_refresh: Instant,
     /// Whether to show the tree or agents flat-list view.
     view_mode: ViewMode,
-    /// Cursor position within the agents flat list.
+    /// Cursor position shared by the agent list and grid.
     agent_list_cursor: usize,
+    /// Latest live captures keyed by agent pane id.
+    grid_captures: HashMap<String, Text<'static>>,
+    last_grid_refresh: Instant,
+    grid_refresh_in_flight: bool,
     /// Runtime theme derived from the palette.
     theme: Theme,
     /// Key bindings (user-configurable).
@@ -297,7 +349,8 @@ pub struct App {
     /// Cached worktree discoveries per (repo, options) so expand/collapse
     /// keypresses don't shell out to git. Refreshed by the periodic background
     /// refresh, invalidated on worktree deletion.
-    worktree_cache: HashMap<(PathBuf, DiscoverOptions), (Instant, Vec<worktrees::DiscoveredWorktree>)>,
+    worktree_cache:
+        HashMap<(PathBuf, DiscoverOptions), (Instant, Vec<worktrees::DiscoveredWorktree>)>,
     worktree_delete_tx: Sender<WorktreeDeleteResult>,
     worktree_delete_rx: Receiver<WorktreeDeleteResult>,
     worktree_create_tx: Sender<WorktreeCreateResult>,
@@ -306,6 +359,8 @@ pub struct App {
     refresh_rx: Receiver<RefreshResult>,
     preview_tx: Sender<PreviewResult>,
     preview_rx: Receiver<PreviewResult>,
+    grid_preview_tx: Sender<GridPreviewResult>,
+    grid_preview_rx: Receiver<GridPreviewResult>,
     /// True while a background pane capture is running.
     preview_in_flight: bool,
     /// True while a background full refresh is running.
@@ -338,6 +393,7 @@ const WORKTREE_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// How often to re-capture the agent pane preview (seconds).
 const PREVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+const GRID_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Minimum spacing between hook-triggered agent scans.
 const TRIGGER_SCAN_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -352,7 +408,8 @@ fn expand_home(path: &str) -> PathBuf {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
     }
     if let Some(rest) = path.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir() {
+        && let Some(home) = dirs::home_dir()
+    {
             return home.join(rest);
         }
     PathBuf::from(path)
@@ -389,14 +446,26 @@ fn render_notification(
         width,
         height,
     };
-    let style = if is_error { theme.worktree_prunable } else { theme.flash };
+    let style = if is_error {
+        theme.worktree_prunable
+    } else {
+        theme.flash
+    };
 
     frame.render_widget(Clear, rect);
     if height == 3 {
         let block = Block::bordered().border_style(style);
-        frame.render_widget(Paragraph::new(message.to_string()).style(style).block(block), rect);
+        frame.render_widget(
+            Paragraph::new(message.to_string())
+                .style(style)
+                .block(block),
+            rect,
+        );
     } else {
-        frame.render_widget(Paragraph::new(Line::styled(message.to_string(), style)), rect);
+        frame.render_widget(
+            Paragraph::new(Line::styled(message.to_string(), style)),
+            rect,
+        );
     }
 }
 
@@ -412,6 +481,7 @@ impl App {
         let (worktree_create_tx, worktree_create_rx) = mpsc::channel();
         let (refresh_tx, refresh_rx) = mpsc::channel();
         let (preview_tx, preview_rx) = mpsc::channel();
+        let (grid_preview_tx, grid_preview_rx) = mpsc::channel();
         Self {
             state,
             tree_state: TreeState::default(),
@@ -426,6 +496,11 @@ impl App {
             last_preview_refresh: Instant::now(),
             view_mode: ViewMode::Tree,
             agent_list_cursor: 0,
+            grid_captures: HashMap::new(),
+            last_grid_refresh: Instant::now()
+                .checked_sub(GRID_REFRESH_INTERVAL)
+                .unwrap_or_else(Instant::now),
+            grid_refresh_in_flight: false,
             theme,
             keymap,
             start_dir_configs,
@@ -445,6 +520,8 @@ impl App {
             refresh_rx,
             preview_tx,
             preview_rx,
+            grid_preview_tx,
+            grid_preview_rx,
             preview_in_flight: false,
             refresh_in_flight: false,
             scan_in_flight: false,
@@ -514,13 +591,16 @@ impl App {
             self.needs_redraw = true;
             // A worktree was (possibly) removed — cached discoveries are stale.
             self.worktree_cache.clear();
-            let pending = self.pending_worktree_deletes.remove(&result.tmux_session_name);
+            let pending = self
+                .pending_worktree_deletes
+                .remove(&result.tmux_session_name);
             match result.result {
                 Ok(()) => {
                     self.marked_sessions.remove(&result.tmux_session_name);
                     self.do_refresh_sessions();
                     if let Some(pending) = pending
-                        && !pending.parent_selection.is_empty() {
+                        && !pending.parent_selection.is_empty()
+                    {
                             self.tree_state.select(pending.parent_selection);
                         }
                     self.set_notification(format!("Deleted worktree {}", result.name), false);
@@ -565,14 +645,26 @@ impl App {
     fn selected_session_name_for_marking(&self) -> Option<String> {
         match self.state.resolve_selection(self.tree_state.selected()) {
             SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                let thread_id = self.state.collections.get(col_idx)?.threads.get(thread_idx)?.id;
+                let thread_id = self
+                    .state
+                    .collections
+                    .get(col_idx)?
+                    .threads
+                    .get(thread_idx)?
+                    .id;
                 self.state
                     .sessions_for_thread(thread_id)
                     .get(sess_idx)
                     .map(|s| s.tmux_session_name.clone())
             }
             SelectedItem::Agent(col_idx, thread_idx, sess_idx, _) => {
-                let thread_id = self.state.collections.get(col_idx)?.threads.get(thread_idx)?.id;
+                let thread_id = self
+                    .state
+                    .collections
+                    .get(col_idx)?
+                    .threads
+                    .get(thread_idx)?
+                    .id;
                 self.state
                     .sessions_for_thread(thread_id)
                     .get(sess_idx)
@@ -613,7 +705,11 @@ impl App {
             .collect()
     }
 
-    pub fn run(&mut self, terminal: &mut Tui, ui_state: persistence::UiState) -> std::io::Result<()> {
+    pub fn run(
+        &mut self,
+        terminal: &mut Tui,
+        ui_state: persistence::UiState,
+    ) -> std::io::Result<()> {
         // Stage pin restore before the initial scan so the first agent scan picks it up.
         self.pending_pin_restore = ui_state.pins;
 
@@ -635,7 +731,9 @@ impl App {
             self.pending_selection_restore = Some(sel);
         }
         // Restore view mode and agents cursor
-        if ui_state.agents_view_active {
+        if ui_state.agent_grid_active {
+            self.view_mode = ViewMode::AgentGrid;
+        } else if ui_state.agents_view_active {
             self.view_mode = ViewMode::Agents;
         }
         self.state.active_filter = ui_state.active_filter;
@@ -660,10 +758,15 @@ impl App {
                 self.request_agent_scan();
             }
 
-            // Refresh agent preview if one is visible
+            // Refresh the selected-agent sidebar or all panes in grid view.
             let selected = self.resolve_current_selected();
+            if matches!(self.view_mode, ViewMode::AgentGrid) {
+                self.request_grid_refresh();
+                self.poll_grid_preview_results();
+            } else {
             self.refresh_preview(&selected);
             self.poll_preview_results();
+            }
 
             // Dirty-flag rendering: skip the (expensive) full redraw unless
             // something changed or a short-lived animation/message is on screen.
@@ -693,7 +796,9 @@ impl App {
                         Mode::Normal => {
                             self.handle_normal_mode(key.code, key.modifiers, terminal)?;
                         }
-                        Mode::Input { .. } => self.handle_input_key(key.code, key.modifiers, terminal)?,
+                        Mode::Input { .. } => {
+                            self.handle_input_key(key.code, key.modifiers, terminal)?
+                        }
                         Mode::Confirm { .. } => self.handle_confirm_key(key.code, key.modifiers),
                         Mode::Error { .. } => self.handle_error_key(key.code, key.modifiers),
                         Mode::Help { .. } => self.handle_help_key(key.code),
@@ -739,6 +844,7 @@ impl App {
             }
         };
         let agents_view_active = matches!(self.view_mode, ViewMode::Agents);
+        let agent_grid_active = matches!(self.view_mode, ViewMode::AgentGrid);
         let agent_list_cursor = self.agent_list_cursor;
         let pins: Vec<(String, u8)> = self
             .state
@@ -747,7 +853,15 @@ impl App {
             .filter_map(|a| a.pin_slot.map(|s| (a.pane_id.clone(), s)))
             .collect();
         let active_filter = self.state.active_filter;
-        let ui = persistence::UiState { open_nodes, selected, agents_view_active, active_filter, agent_list_cursor, pins };
+        let ui = persistence::UiState {
+            open_nodes,
+            selected,
+            agents_view_active,
+            agent_grid_active,
+            active_filter,
+            agent_list_cursor,
+            pins,
+        };
         if let Err(e) = persistence::save_ui(&ui) {
             self.exit_warning = Some(format!("Failed to save UI state: {}", e));
         }

@@ -6,12 +6,15 @@ impl App {
     /// tmux server can't stall the UI.
     pub(super) fn refresh_preview(&mut self, selected: &SelectedItem) {
         if let SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) = selected {
-            if let Some(agent) = self.state.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx) {
+            if let Some(agent) =
+                self.state
+                    .resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
+            {
                 let session_name = agent.tmux_session_name.clone();
                 let pane_id = agent.pane_id.clone();
                 let pane_changed = self.preview_pane_id.as_deref() != Some(&pane_id);
-                let needs_refresh = pane_changed
-                    || self.last_preview_refresh.elapsed() >= PREVIEW_REFRESH_INTERVAL;
+                let needs_refresh =
+                    pane_changed || self.last_preview_refresh.elapsed() >= PREVIEW_REFRESH_INTERVAL;
                 if needs_refresh && !self.preview_in_flight {
                     self.preview_in_flight = true;
                     self.preview_pane_id = Some(pane_id.clone());
@@ -19,7 +22,8 @@ impl App {
                     let tx = self.preview_tx.clone();
                     std::thread::spawn(move || {
                         if let Some(raw) = mux::capture_pane(&session_name, &pane_id)
-                            && let Ok(mut text) = raw.as_bytes().into_text() {
+                            && let Ok(mut text) = raw.as_bytes().into_text()
+                        {
                                 // Remap ANSI resets so the app
                                 // background shows through, keeping the agent's real colors.
                                 crate::core::ansi::clear_reset_backgrounds(&mut text);
@@ -45,6 +49,48 @@ impl App {
                 self.preview_content = Some(result.text);
                 self.needs_redraw = true;
             }
+        }
+    }
+
+    pub(super) fn request_grid_refresh(&mut self) {
+        if self.grid_refresh_in_flight || self.last_grid_refresh.elapsed() < GRID_REFRESH_INTERVAL {
+            return;
+        }
+        let agents = self.state.all_agents_flat();
+        if agents.is_empty() {
+            if !self.grid_captures.is_empty() {
+                self.grid_captures.clear();
+                self.needs_redraw = true;
+            }
+            return;
+        }
+
+        self.grid_refresh_in_flight = true;
+        self.last_grid_refresh = Instant::now();
+        let panes: Vec<(String, String)> = agents
+            .into_iter()
+            .map(|agent| (agent.tmux_session_name, agent.pane_id))
+            .collect();
+        let tx = self.grid_preview_tx.clone();
+        std::thread::spawn(move || {
+            let mut captures = HashMap::new();
+            for (session_name, pane_id) in panes {
+                if let Some(raw) = mux::capture_pane(&session_name, &pane_id)
+                    && let Ok(mut text) = raw.as_bytes().into_text()
+                {
+                    crate::core::ansi::clear_reset_backgrounds(&mut text);
+                    captures.insert(pane_id, text);
+                }
+            }
+            let _ = tx.send(GridPreviewResult { captures });
+        });
+    }
+
+    pub(super) fn poll_grid_preview_results(&mut self) {
+        while let Ok(result) = self.grid_preview_rx.try_recv() {
+            self.grid_refresh_in_flight = false;
+            self.grid_captures = result.captures;
+            self.needs_redraw = true;
         }
     }
 
@@ -74,8 +120,12 @@ impl App {
         let trigger_path = persistence::config_dir().join("agent.trigger");
         std::thread::spawn(move || {
             let live = mux::list_managed_sessions_with_timestamps();
-            let discoveries: Vec<(uuid::Uuid, PathBuf, DiscoverOptions, Vec<worktrees::DiscoveredWorktree>)> =
-                worktree_jobs
+            let discoveries: Vec<(
+                uuid::Uuid,
+                PathBuf,
+                DiscoverOptions,
+                Vec<worktrees::DiscoveredWorktree>,
+            )> = worktree_jobs
                     .into_iter()
                     .map(|(thread_id, repo, options)| {
                         let wts = worktrees::discover(&repo, options).unwrap_or_default();
@@ -93,7 +143,9 @@ impl App {
                 PI_STATUS_MAX_AGE,
                 mux::backend(),
             );
-            let trigger_mtime = std::fs::metadata(&trigger_path).and_then(|m| m.modified()).ok();
+            let trigger_mtime = std::fs::metadata(&trigger_path)
+                .and_then(|m| m.modified())
+                .ok();
             let _ = tx.send(RefreshResult {
                 epoch,
                 sessions: Some(SessionsPayload { live, discoveries }),
@@ -127,7 +179,9 @@ impl App {
                 PI_STATUS_MAX_AGE,
                 mux::backend(),
             );
-            let trigger_mtime = std::fs::metadata(&trigger_path).and_then(|m| m.modified()).ok();
+            let trigger_mtime = std::fs::metadata(&trigger_path)
+                .and_then(|m| m.modified())
+                .ok();
             let _ = tx.send(RefreshResult {
                 epoch,
                 sessions: None,
@@ -215,7 +269,8 @@ impl App {
         let col = self.state.collections.get(col_idx)?;
         let thread = col.threads.get(thread_idx)?;
         let collection = (!col.is_root).then_some(col.name.as_str());
-        let spec = config::resolve_start_dir_match(&self.start_dir_configs, collection, &thread.name)?;
+        let spec =
+            config::resolve_start_dir_match(&self.start_dir_configs, collection, &thread.name)?;
         let config::StartDirMatch::Default(path) = spec else {
             return None;
         };
@@ -240,24 +295,38 @@ impl App {
                     .get(&(repo.clone(), options))
                     .filter(|(at, _)| at.elapsed() < WORKTREE_CACHE_TTL)
                     .map(|(_, wts)| wts.clone());
-                let wts = cached.unwrap_or_else(|| {
-                    worktrees::discover(&repo, options).unwrap_or_default()
-                });
+                let wts = cached
+                    .unwrap_or_else(|| worktrees::discover(&repo, options).unwrap_or_default());
                 (thread_id, repo, options, wts)
             })
             .collect();
         self.apply_worktree_discoveries(discoveries);
     }
 
-    pub(super) fn find_thread_indices_by_id(&self, thread_id: uuid::Uuid) -> Option<(usize, usize)> {
-        self.state.collections.iter().enumerate().find_map(|(ci, col)| {
-            col.threads.iter().position(|t| t.id == thread_id).map(|ti| (ci, ti))
+    pub(super) fn find_thread_indices_by_id(
+        &self,
+        thread_id: uuid::Uuid,
+    ) -> Option<(usize, usize)> {
+        self.state
+            .collections
+            .iter()
+            .enumerate()
+            .find_map(|(ci, col)| {
+                col.threads
+                    .iter()
+                    .position(|t| t.id == thread_id)
+                    .map(|ti| (ci, ti))
         })
     }
 
     pub(super) fn apply_worktree_discoveries(
         &mut self,
-        discoveries: Vec<(uuid::Uuid, PathBuf, DiscoverOptions, Vec<worktrees::DiscoveredWorktree>)>,
+        discoveries: Vec<(
+            uuid::Uuid,
+            PathBuf,
+            DiscoverOptions,
+            Vec<worktrees::DiscoveredWorktree>,
+        )>,
     ) {
         let mut sessions = Vec::new();
         let mut used_names = HashSet::new();
@@ -272,14 +341,21 @@ impl App {
             for wt in worktrees {
                 let mut label = slugify(&wt.label_source());
                 if label.is_empty() {
-                    label = wt.head.as_deref().map(short_head).unwrap_or("worktree").to_string();
+                    label = wt
+                        .head
+                        .as_deref()
+                        .map(short_head)
+                        .unwrap_or("worktree")
+                        .to_string();
                 }
-                let mut session_name = match self.state.make_session_name(col_idx, thread_idx, &label) {
+                let mut session_name =
+                    match self.state.make_session_name(col_idx, thread_idx, &label) {
                     Some(name) => name,
                     None => continue,
                 };
                 if used_names.contains(&session_name)
-                    && let Some(head) = wt.head.as_deref() {
+                    && let Some(head) = wt.head.as_deref()
+                {
                         label = format!("{}-{}", label, short_head(head));
                         if let Some(name) = self.state.make_session_name(col_idx, thread_idx, &label) {
                             session_name = name;
@@ -324,7 +400,10 @@ impl App {
         self.tree_state.opened().contains(&path)
     }
 
-    pub(super) fn find_thread_for_worktree_config(&self, cfg: &WorktreeConfig) -> Option<(usize, usize)> {
+    pub(super) fn find_thread_for_worktree_config(
+        &self,
+        cfg: &WorktreeConfig,
+    ) -> Option<(usize, usize)> {
         self.state
             .collections
             .iter()
@@ -337,7 +416,10 @@ impl App {
                 if !collection_matches {
                     return None;
                 }
-                let thread_idx = col.threads.iter().position(|thread| thread.name == cfg.thread)?;
+                let thread_idx = col
+                    .threads
+                    .iter()
+                    .position(|thread| thread.name == cfg.thread)?;
                 Some((col_idx, thread_idx))
             })
     }
@@ -372,15 +454,13 @@ impl App {
 
         let status_dir = persistence::config_dir().join("pi-status");
         let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
-        let pi_statuses = pi_status::load_and_prune(
-                &status_dir,
-                &live_panes,
-                PI_STATUS_MAX_AGE,
-                mux::backend(),
-            );
+        let pi_statuses =
+            pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE, mux::backend());
 
         let trigger_path = persistence::config_dir().join("agent.trigger");
-        let trigger_mtime = std::fs::metadata(&trigger_path).and_then(|m| m.modified()).ok();
+        let trigger_mtime = std::fs::metadata(&trigger_path)
+            .and_then(|m| m.modified())
+            .ok();
 
         self.apply_agent_scan(agents, pi_statuses, trigger_mtime);
     }
@@ -412,7 +492,11 @@ impl App {
                 (
                     a.pane_id.clone(),
                     Preserved {
-                        custom_name: if a.renamed { Some(a.display_name.clone()) } else { None },
+                        custom_name: if a.renamed {
+                            Some(a.display_name.clone())
+                        } else {
+                            None
+                        },
                         pin_slot: a.pin_slot,
                     },
                 )

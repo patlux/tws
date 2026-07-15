@@ -274,6 +274,7 @@ help       = "?"
 hide       = "H"
 show_hidden = "u"
 toggle_active_filter = "f"
+toggle_grid = "V"       # live coding-agent grid (default: Shift+V)
 
 ```
 

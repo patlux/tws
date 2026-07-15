@@ -1,7 +1,7 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::theme::Theme;
@@ -46,27 +46,130 @@ pub fn line_count(theme: &Theme, keymap: &Keymap) -> usize {
 fn help_lines(theme: &Theme, keymap: &Keymap) -> Vec<Line<'static>> {
     vec![
         section("Global", theme),
-        row(format!("{} / Esc / Enter / q", keymap.key_hint(KeyMode::Normal, Action::Help)), "close help", theme),
-        row(format!("{} / Ctrl+C", keymap.key_hint(KeyMode::Normal, Action::Quit)), "quit tws", theme),
-        row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::Finder), keymap.key_hint(KeyMode::Normal, Action::ToggleView)), "find / toggle agents view", theme),
+        row(
+            format!(
+                "{} / Esc / Enter / q",
+                keymap.key_hint(KeyMode::Normal, Action::Help)
+            ),
+            "close help",
+            theme,
+        ),
+        row(
+            format!(
+                "{} / Ctrl+C",
+                keymap.key_hint(KeyMode::Normal, Action::Quit)
+            ),
+            "quit tws",
+            theme,
+        ),
+        row(
+            format!(
+                "{} / {} / {}",
+                keymap.key_hint(KeyMode::Normal, Action::Finder),
+                keymap.key_hint(KeyMode::Normal, Action::ToggleView),
+                keymap.key_hint(KeyMode::Normal, Action::ToggleGrid)
+            ),
+            "find / agents list / live grid",
+            theme,
+        ),
         row("1-5", "attach recent session", theme),
         blank(),
         section("Tree", theme),
-        row(format!("{}  {}", keymap.key_hint_pair(KeyMode::Normal, Action::MoveUp, Action::MoveDown), keymap.key_hint_pair(KeyMode::Normal, Action::MoveLeft, Action::MoveRight)), "move, collapse, expand", theme),
+        row(
+            format!(
+                "{}  {}",
+                keymap.key_hint_pair(KeyMode::Normal, Action::MoveUp, Action::MoveDown),
+                keymap.key_hint_pair(KeyMode::Normal, Action::MoveLeft, Action::MoveRight)
+            ),
+            "move, collapse, expand",
+            theme,
+        ),
         row("gg / G", "jump top / bottom", theme),
-        row(keymap.key_hint(KeyMode::Normal, Action::Enter), "new, attach, or launch", theme),
-        row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::Add), keymap.key_hint(KeyMode::Normal, Action::AddCollection)), "add thread / collection", theme),
-        row(keymap.key_hint(KeyMode::Normal, Action::AddWorktree), "new git worktree", theme),
-        row(format!("{} / {} / {}", keymap.key_hint(KeyMode::Normal, Action::Rename), keymap.key_hint(KeyMode::Normal, Action::Delete), keymap.key_hint(KeyMode::Normal, Action::KillSession)), "rename / delete / kill", theme),
-        row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::MarkSession), keymap.key_hint(KeyMode::Normal, Action::ClearMarks)), "mark session / clear marks", theme),
-        row(keymap.key_hint(KeyMode::Normal, Action::Move), "move session to thread", theme),
-        row(keymap.key_hint(KeyMode::Normal, Action::ToggleSelect), "toggle expand", theme),
-        row(keymap.key_hint(KeyMode::Normal, Action::ExpandAll), "expand / collapse all", theme),
-        row(format!("{} / {}", keymap.key_hint(KeyMode::Normal, Action::Hide), keymap.key_hint(KeyMode::Normal, Action::ShowHidden)), "hide / show hidden", theme),
-        row(keymap.key_hint(KeyMode::Normal, Action::ToggleActiveFilter), "toggle active-only filter", theme),
+        row(
+            keymap.key_hint(KeyMode::Normal, Action::Enter),
+            "new, attach, or launch",
+            theme,
+        ),
+        row(
+            format!(
+                "{} / {}",
+                keymap.key_hint(KeyMode::Normal, Action::Add),
+                keymap.key_hint(KeyMode::Normal, Action::AddCollection)
+            ),
+            "add thread / collection",
+            theme,
+        ),
+        row(
+            keymap.key_hint(KeyMode::Normal, Action::AddWorktree),
+            "new git worktree",
+            theme,
+        ),
+        row(
+            format!(
+                "{} / {} / {}",
+                keymap.key_hint(KeyMode::Normal, Action::Rename),
+                keymap.key_hint(KeyMode::Normal, Action::Delete),
+                keymap.key_hint(KeyMode::Normal, Action::KillSession)
+            ),
+            "rename / delete / kill",
+            theme,
+        ),
+        row(
+            format!(
+                "{} / {}",
+                keymap.key_hint(KeyMode::Normal, Action::MarkSession),
+                keymap.key_hint(KeyMode::Normal, Action::ClearMarks)
+            ),
+            "mark session / clear marks",
+            theme,
+        ),
+        row(
+            keymap.key_hint(KeyMode::Normal, Action::Move),
+            "move session to thread",
+            theme,
+        ),
+        row(
+            keymap.key_hint(KeyMode::Normal, Action::ToggleSelect),
+            "toggle expand",
+            theme,
+        ),
+        row(
+            keymap.key_hint(KeyMode::Normal, Action::ExpandAll),
+            "expand / collapse all",
+            theme,
+        ),
+        row(
+            format!(
+                "{} / {}",
+                keymap.key_hint(KeyMode::Normal, Action::Hide),
+                keymap.key_hint(KeyMode::Normal, Action::ShowHidden)
+            ),
+            "hide / show hidden",
+            theme,
+        ),
+        row(
+            keymap.key_hint(KeyMode::Normal, Action::ToggleActiveFilter),
+            "toggle active-only filter",
+            theme,
+        ),
         blank(),
         section("Agents", theme),
-        row(format!("{} / {} / {}", keymap.key_hint(KeyMode::Agents, Action::Enter), keymap.key_hint(KeyMode::Agents, Action::PinAgent), keymap.key_hint(KeyMode::Agents, Action::PinAgentSlot)), "attach / pin / set slot", theme),
+        row(
+            format!(
+                "{} / {} / {}",
+                keymap.key_hint(KeyMode::Agents, Action::Enter),
+                keymap.key_hint(KeyMode::Agents, Action::PinAgent),
+                keymap.key_hint(KeyMode::Agents, Action::PinAgentSlot)
+            ),
+            "attach / pin / set slot",
+            theme,
+        ),
+        row(
+            keymap.key_hint(KeyMode::Normal, Action::ToggleGrid),
+            "open or close live agent grid",
+            theme,
+        ),
+        row("h/j/k/l", "navigate live grid", theme),
         row("0-9", "jump to pinned agent", theme),
     ]
 }

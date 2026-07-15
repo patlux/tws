@@ -1,7 +1,7 @@
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::config::keys::{Action, KeyMode, Keymap};
 use crate::theme::Theme;
@@ -13,7 +13,9 @@ pub enum StatusContext {
     NormalCollection,
     NormalThread,
     NormalSession,
-    NormalMarkedSessions { count: usize },
+    NormalMarkedSessions {
+        count: usize,
+    },
     NormalWorktree,
     NormalWorktreeSession,
     NormalAgent,
@@ -24,9 +26,12 @@ pub enum StatusContext {
     Finder,
     ThreadPicker,
     AgentsView,
+    AgentGrid,
     /// Slot-assign mode: agents view is waiting for a digit to assign a slot to an agent.
     /// Carries the human-readable path of the target agent for display.
-    AgentsViewSlotAssign { target_path: String },
+    AgentsViewSlotAssign {
+        target_path: String,
+    },
 }
 
 pub struct StatusState<'a> {
@@ -35,29 +40,55 @@ pub struct StatusState<'a> {
     pub flash: Option<&'a str>,
 }
 
-pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusState<'_>, theme: &Theme, keymap: &Keymap) {
+pub fn render(
+    frame: &mut Frame,
+    ctx: StatusContext,
+    area: Rect,
+    state: StatusState<'_>,
+    theme: &Theme,
+    keymap: &Keymap,
+) {
     // Slot-assign mode renders a custom prompt instead of the hint row.
     let slot_assign_prompt: Option<String> = match &ctx {
-        StatusContext::AgentsViewSlotAssign { target_path } => {
-            Some(format!("Set slot for {} — 0-9 assign · Esc cancel", target_path))
-        }
+        StatusContext::AgentsViewSlotAssign { target_path } => Some(format!(
+            "Set slot for {} — 0-9 assign · Esc cancel",
+            target_path
+        )),
         _ => None,
     };
 
     let hints: Vec<(String, &str)> = match ctx {
         StatusContext::NormalNone => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
-            (keymap.key_hint(KeyMode::Normal, Action::Enter),          "quick session"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::Enter),
+                "quick session",
+            ),
             (keymap.key_hint(KeyMode::Normal, Action::Add),            "add thread"),
-            (keymap.key_hint(KeyMode::Normal, Action::AddCollection),  "add collection"),
-            (keymap.key_hint(KeyMode::Normal, Action::ShowHidden),     "show hidden"),
-            (keymap.key_hint(KeyMode::Normal, Action::ToggleActiveFilter), "filter"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::AddCollection),
+                "add collection",
+            ),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::ShowHidden),
+                "show hidden",
+            ),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::ToggleActiveFilter),
+                "filter",
+            ),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
-            (keymap.key_hint(KeyMode::Normal, Action::ExpandAll),      "toggle all"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::ExpandAll),
+                "toggle all",
+            ),
         ],
         StatusContext::NormalCollection => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
-            (keymap.key_hint(KeyMode::Normal, Action::ToggleSelect),   "toggle"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::ToggleSelect),
+                "toggle",
+            ),
             (keymap.key_hint(KeyMode::Normal, Action::Add),            "add thread"),
             (keymap.key_hint(KeyMode::Normal, Action::Rename),         "rename"),
             (keymap.key_hint(KeyMode::Normal, Action::Hide),           "hide"),
@@ -66,12 +97,18 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
         ],
         StatusContext::NormalThread => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
-            (keymap.key_hint(KeyMode::Normal, Action::Enter),          "new session"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::Enter),
+                "new session",
+            ),
             (keymap.key_hint(KeyMode::Normal, Action::Add),            "add thread"),
             (keymap.key_hint(KeyMode::Normal, Action::Rename),         "rename"),
             (keymap.key_hint(KeyMode::Normal, Action::Hide),           "hide"),
             (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete"),
-            (keymap.key_hint(KeyMode::Normal, Action::KillSession),    "kill sessions"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::KillSession),
+                "kill sessions",
+            ),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
         ],
         StatusContext::NormalSession => vec![
@@ -79,15 +116,30 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
             (keymap.key_hint(KeyMode::Normal, Action::Enter),          "attach"),
             (keymap.key_hint(KeyMode::Normal, Action::Rename),         "rename"),
             (keymap.key_hint(KeyMode::Normal, Action::Move),           "move"),
-            (keymap.key_hint(KeyMode::Normal, Action::MarkSession),    "mark"),
-            (keymap.key_hint(KeyMode::Normal, Action::KillSession),    "kill"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::MarkSession),
+                "mark",
+            ),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::KillSession),
+                "kill",
+            ),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
         ],
         StatusContext::NormalMarkedSessions { count } => vec![
             (format!("{} selected", count),                            ""),
-            (keymap.key_hint(KeyMode::Normal, Action::MarkSession),     "toggle"),
-            (keymap.key_hint(KeyMode::Normal, Action::ClearMarks),      "clear"),
-            (keymap.key_hint(KeyMode::Normal, Action::KillSession),     "kill selected"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::MarkSession),
+                "toggle",
+            ),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::ClearMarks),
+                "clear",
+            ),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::KillSession),
+                "kill selected",
+            ),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),          "find"),
         ],
         StatusContext::NormalWorktree => vec![
@@ -99,9 +151,18 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
         StatusContext::NormalWorktreeSession => vec![
             (keymap.key_hint(KeyMode::Normal, Action::Quit),           "quit"),
             (keymap.key_hint(KeyMode::Normal, Action::Enter),          "attach"),
-            (keymap.key_hint(KeyMode::Normal, Action::Delete),         "delete worktree"),
-            (keymap.key_hint(KeyMode::Normal, Action::MarkSession),    "mark"),
-            (keymap.key_hint(KeyMode::Normal, Action::KillSession),    "kill+delete"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::Delete),
+                "delete worktree",
+            ),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::MarkSession),
+                "mark",
+            ),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::KillSession),
+                "kill+delete",
+            ),
             (keymap.key_hint(KeyMode::Normal, Action::Finder),         "find"),
         ],
         StatusContext::NormalAgent => vec![
@@ -115,31 +176,57 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
             (keymap.key_hint(KeyMode::Input, Action::Cancel),  "cancel"),
         ],
         StatusContext::Confirm => vec![
-            (keymap.key_hint(KeyMode::ConfirmModal, Action::Confirm), "confirm"),
-            (keymap.key_hint(KeyMode::ConfirmModal, Action::Cancel),  "cancel"),
+            (
+                keymap.key_hint(KeyMode::ConfirmModal, Action::Confirm),
+                "confirm",
+            ),
+            (
+                keymap.key_hint(KeyMode::ConfirmModal, Action::Cancel),
+                "cancel",
+            ),
         ],
-        StatusContext::Error => vec![
-            ("Enter/Esc".to_string(), "close"),
-        ],
-        StatusContext::Help => vec![
-            ("?/Enter/Esc/q".to_string(), "close help"),
-        ],
+        StatusContext::Error => vec![("Enter/Esc".to_string(), "close")],
+        StatusContext::Help => vec![("?/Enter/Esc/q".to_string(), "close help")],
         StatusContext::Finder => vec![
             (keymap.key_hint(KeyMode::Finder, Action::Confirm),                                "attach"),
             (keymap.key_hint(KeyMode::Finder, Action::Cancel),                                 "cancel"),
-            (keymap.key_hint_pair(KeyMode::Finder, Action::MoveUp, Action::MoveDown),          "navigate"),
+            (
+                keymap.key_hint_pair(KeyMode::Finder, Action::MoveUp, Action::MoveDown),
+                "navigate",
+            ),
         ],
         StatusContext::ThreadPicker => vec![
             (keymap.key_hint(KeyMode::Finder, Action::Confirm),                                "move"),
             (keymap.key_hint(KeyMode::Finder, Action::Cancel),                                 "cancel"),
-            (keymap.key_hint_pair(KeyMode::Finder, Action::MoveUp, Action::MoveDown),          "navigate"),
+            (
+                keymap.key_hint_pair(KeyMode::Finder, Action::MoveUp, Action::MoveDown),
+                "navigate",
+            ),
         ],
         StatusContext::AgentsView => vec![
-            (keymap.key_hint_pair(KeyMode::Agents, Action::MoveUp, Action::MoveDown),   "navigate"),
+            (
+                keymap.key_hint_pair(KeyMode::Agents, Action::MoveUp, Action::MoveDown),
+                "navigate",
+            ),
             (keymap.key_hint(KeyMode::Agents, Action::Enter),                           "attach"),
             (keymap.key_hint(KeyMode::Agents, Action::PinAgent),                        "pin"),
-            (keymap.key_hint(KeyMode::Agents, Action::PinAgentSlot),                    "set slot"),
-            (keymap.key_hint(KeyMode::Normal, Action::ToggleView),                      "tree view"),
+            (
+                keymap.key_hint(KeyMode::Agents, Action::PinAgentSlot),
+                "set slot",
+            ),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::ToggleView),
+                "tree view",
+            ),
+            (keymap.key_hint(KeyMode::Agents, Action::Quit), "quit"),
+        ],
+        StatusContext::AgentGrid => vec![
+            ("h/j/k/l".to_string(), "navigate"),
+            (keymap.key_hint(KeyMode::Agents, Action::Enter), "attach"),
+            (
+                keymap.key_hint(KeyMode::Normal, Action::ToggleGrid),
+                "close grid",
+            ),
             (keymap.key_hint(KeyMode::Agents, Action::Quit),                            "quit"),
         ],
         // Hint row is empty when assign prompt is active — prompt replaces it.
@@ -177,8 +264,8 @@ pub fn render(frame: &mut Frame, ctx: StatusContext, area: Rect, state: StatusSt
     let right_line = Line::from(Span::styled(&*right_text, theme.statusbar_desc));
     let right_width = right_text.len() as u16;
 
-    let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)])
-        .split(area);
+    let chunks =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).split(area);
 
     frame.render_widget(Line::from(left_spans), chunks[0]);
     frame.render_widget(

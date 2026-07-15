@@ -1,3 +1,4 @@
+pub mod agent_grid;
 pub mod agent_preview;
 pub mod agents_view;
 pub mod confirm_modal;

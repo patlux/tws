@@ -27,7 +27,8 @@ impl App {
         // (Only flash_msg *must* be outside — it mutates self.flash on expiry.)
         // Only show the bar in Normal mode when there are recent sessions.
         let is_normal = matches!(self.mode, Mode::Normal);
-        let recent_data: Vec<(String, String)> = if is_normal && matches!(self.view_mode, ViewMode::Tree) {
+        let recent_data: Vec<(String, String)> =
+            if is_normal && matches!(self.view_mode, ViewMode::Tree) {
             self.state
                 .recent_sessions(5)
                 .iter()
@@ -45,7 +46,8 @@ impl App {
         let empty_hint = if self.state.active_filter {
             format!(
                 "Active filter on — nothing is active. Press {} to show all.",
-                self.keymap.key_hint(KeyMode::Normal, Action::ToggleActiveFilter),
+                self.keymap
+                    .key_hint(KeyMode::Normal, Action::ToggleActiveFilter),
             )
         } else if hidden_count > 0 {
             format!(
@@ -58,7 +60,8 @@ impl App {
         };
 
         // Pre-compute flat agents list for agents view mode.
-        let flat_agents: Vec<FlatAgent> = if matches!(self.view_mode, ViewMode::Agents) {
+        let flat_agents: Vec<FlatAgent> =
+            if matches!(self.view_mode, ViewMode::Agents | ViewMode::AgentGrid) {
             self.state.all_agents_flat()
         } else {
             Vec::new()
@@ -67,21 +70,23 @@ impl App {
         // Pre-compute agent preview data.
         let selected_item = match self.view_mode {
             ViewMode::Tree => self.state.resolve_selection(self.tree_state.selected()),
-            ViewMode::Agents => flat_agents
+            ViewMode::Agents | ViewMode::AgentGrid => flat_agents
                 .get(self.agent_list_cursor)
                 .map(|a| SelectedItem::Agent(a.col_idx, a.thread_idx, a.sess_idx, a.agent_idx))
                 .unwrap_or(SelectedItem::None),
         };
-        let show_preview = self.preview_content.is_some() && matches!(selected_item, SelectedItem::Agent(..));
+        let show_preview =
+            self.preview_content.is_some() && matches!(selected_item, SelectedItem::Agent(..));
         let sidebar_title = match &selected_item {
-            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
-                self.state.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
+            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => self
+                .state
+                .resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
                     .map(|a| format!("{} {}", a.agent_type.icon(), a.display_name))
-                    .unwrap_or_default()
-            }
+                .unwrap_or_default(),
             _ => String::new(),
         };
-        let show_sidebar = show_preview && is_normal;
+        let show_sidebar =
+            show_preview && is_normal && !matches!(self.view_mode, ViewMode::AgentGrid);
 
         terminal.draw(|frame| {
             let area = frame.area();
@@ -117,10 +122,8 @@ impl App {
             // Split content area horizontally if sidebar should show
             let content_area = chunks[0];
             let (tree_area, sidebar_area) = if show_sidebar {
-                let horiz = Layout::horizontal([
-                    Constraint::Percentage(60),
-                    Constraint::Percentage(40),
-                ])
+                let horiz =
+                    Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
                 .split(content_area);
                 (horiz[0], Some(horiz[1]))
             } else {
@@ -128,12 +131,28 @@ impl App {
             };
 
             // Tree area or agents flat-list view
-            if matches!(self.view_mode, ViewMode::Agents) {
-                agents_view::render(frame, &flat_agents, self.agent_list_cursor, tree_area, &self.theme);
+            if matches!(self.view_mode, ViewMode::AgentGrid) {
+                agent_grid::render(
+                    frame,
+                    &flat_agents,
+                    &self.grid_captures,
+                    self.agent_list_cursor,
+                    tree_area,
+                    &self.theme,
+                );
+            } else if matches!(self.view_mode, ViewMode::Agents) {
+                agents_view::render(
+                    frame,
+                    &flat_agents,
+                    self.agent_list_cursor,
+                    tree_area,
+                    &self.theme,
+                );
             } else {
                 let block = Block::default();
                 let deleting_labels = self.worktree_delete_progress_labels();
-                let deleting_label = |session_name: &str| deleting_labels.get(session_name).cloned();
+                let deleting_label =
+                    |session_name: &str| deleting_labels.get(session_name).cloned();
                 let deleting_icon = self.worktree_spinner_frame();
                 let marked_sessions = &self.marked_sessions;
                 let is_marked = |session_name: &str| marked_sessions.contains(session_name);
@@ -204,7 +223,9 @@ impl App {
                 // Pin to bottom: scroll so the last screenful is visible.
                 // Inner height = area minus 2 for top/bottom border.
                 let visible = sb_area.height.saturating_sub(2) as usize;
-                let scroll = self.preview_content.as_ref()
+                let scroll = self
+                    .preview_content
+                    .as_ref()
                     .map_or(0, |t| t.lines.len().saturating_sub(visible));
                 agent_preview::render(
                     frame,
@@ -272,29 +293,55 @@ impl App {
                         InputPurpose::RenameSession { .. } => "Rename Session",
                         InputPurpose::RenameAgent { .. } => "Rename Agent",
                     };
-                    input_modal::render(frame, title, &buffer.content, buffer.cursor, area, &self.theme);
+                    input_modal::render(
+                        frame,
+                        title,
+                        &buffer.content,
+                        buffer.cursor,
+                        area,
+                        &self.theme,
+                    );
                 }
                 Mode::Confirm { purpose } => {
                     let message = match purpose {
                         ConfirmPurpose::DeleteCollection { idx, name } => {
-                            let sessions: usize = self.state.collections.get(*idx)
-                                .map(|col| col.threads.iter()
+                            let sessions: usize = self
+                                .state
+                                .collections
+                                .get(*idx)
+                                .map(|col| {
+                                    col.threads
+                                        .iter()
                                     .map(|t| self.state.sessions_for_thread(t.id).len())
-                                    .sum())
+                                        .sum()
+                                })
                                 .unwrap_or(0);
                             if sessions > 0 {
-                                format!("Delete collection \"{}\" and kill {} session(s)?", name, sessions)
+                                format!(
+                                    "Delete collection \"{}\" and kill {} session(s)?",
+                                    name, sessions
+                                )
                             } else {
                                 format!("Delete collection \"{}\"?", name)
                             }
                         }
-                        ConfirmPurpose::DeleteThread { col_idx, thread_idx, name } => {
-                            let sessions = self.state.collections.get(*col_idx)
+                        ConfirmPurpose::DeleteThread {
+                            col_idx,
+                            thread_idx,
+                            name,
+                        } => {
+                            let sessions = self
+                                .state
+                                .collections
+                                .get(*col_idx)
                                 .and_then(|col| col.threads.get(*thread_idx))
                                 .map(|t| self.state.sessions_for_thread(t.id).len())
                                 .unwrap_or(0);
                             if sessions > 0 {
-                                format!("Delete thread \"{}\" and kill {} session(s)?", name, sessions)
+                                format!(
+                                    "Delete thread \"{}\" and kill {} session(s)?",
+                                    name, sessions
+                                )
                             } else {
                                 format!("Delete thread \"{}\"?", name)
                             }
@@ -308,7 +355,9 @@ impl App {
                         ConfirmPurpose::KillMarkedSessions { session_names } => {
                             format!("Kill {} selected sessions?", session_names.len())
                         }
-                        ConfirmPurpose::DeleteWorktree { name, kill_session, .. } => {
+                        ConfirmPurpose::DeleteWorktree {
+                            name, kill_session, ..
+                        } => {
                             if *kill_session {
                                 format!("Kill session and delete worktree \"{}\"?", name)
                             } else {
@@ -316,7 +365,13 @@ impl App {
                             }
                         }
                     };
-                    confirm_modal::render(frame, &message, !purpose.requires_explicit_yes(), area, &self.theme);
+                    confirm_modal::render(
+                        frame,
+                        &message,
+                        !purpose.requires_explicit_yes(),
+                        area,
+                        &self.theme,
+                    );
                 }
                 Mode::Error { message } => {
                     error_modal::render(frame, message, area, &self.theme);
@@ -364,29 +419,43 @@ impl App {
             Mode::Finder { .. } => StatusContext::Finder,
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
             Mode::Normal => {
-                if matches!(self.view_mode, ViewMode::Agents) {
+                if matches!(self.view_mode, ViewMode::Agents | ViewMode::AgentGrid) {
                     if let Some(pending) = &self.pin_assign_pending {
                         let target_path = self
                             .state
                             .all_agents_flat()
                             .into_iter()
                             .find(|a| &a.pane_id == pending)
-                            .map(|a| format!("{} / {} / {}", a.thread_name, a.session_display_name, a.agent_display_name))
+                            .map(|a| {
+                                format!(
+                                    "{} / {} / {}",
+                                    a.thread_name, a.session_display_name, a.agent_display_name
+                                )
+                            })
                             .unwrap_or_else(|| "agent".to_string());
                         return StatusContext::AgentsViewSlotAssign { target_path };
                     }
-                    return StatusContext::AgentsView;
+                    return if matches!(self.view_mode, ViewMode::AgentGrid) {
+                        StatusContext::AgentGrid
+                    } else {
+                        StatusContext::AgentsView
+                    };
                 }
                 let marked_count = self.marked_session_names().len();
                 if marked_count > 0 {
-                    return StatusContext::NormalMarkedSessions { count: marked_count };
+                    return StatusContext::NormalMarkedSessions {
+                        count: marked_count,
+                    };
                 }
                 match selected {
                     SelectedItem::None => StatusContext::NormalNone,
                     SelectedItem::Collection(_) => StatusContext::NormalCollection,
                     SelectedItem::Thread(_, _) => StatusContext::NormalThread,
                     SelectedItem::Session(col_idx, thread_idx, sess_idx) => {
-                        if self.worktree_for_active_session_selection(*col_idx, *thread_idx, *sess_idx).is_some() {
+                        if self
+                            .worktree_for_active_session_selection(*col_idx, *thread_idx, *sess_idx)
+                            .is_some()
+                        {
                             StatusContext::NormalWorktreeSession
                         } else {
                             StatusContext::NormalSession

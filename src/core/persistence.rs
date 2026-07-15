@@ -10,6 +10,8 @@ pub struct UiState {
     pub selected: Option<Vec<String>>,
     #[serde(default)]
     pub agents_view_active: bool,
+    #[serde(default)]
+    pub agent_grid_active: bool,
     /// Whether the active filter (hide threads without live sessions) is on.
     #[serde(default)]
     pub active_filter: bool,
@@ -116,12 +118,18 @@ pub enum LockState {
 pub fn acquire_instance_lock() -> LockState {
     let Ok(dir) = ensure_config_dir() else {
         // Can't lock without a config dir; saves will fail loudly later anyway.
-        return LockState::Acquired(LockGuard { path: PathBuf::from("/nonexistent/tws.lock") });
+        return LockState::Acquired(LockGuard {
+            path: PathBuf::from("/nonexistent/tws.lock"),
+        });
     };
     let path = dir.join("tws.lock");
 
     loop {
-        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
             Ok(mut f) => {
                 use io::Write;
                 let _ = write!(f, "{}", std::process::id());
@@ -272,7 +280,10 @@ mod tests {
 
     #[test]
     fn ui_state_active_filter_round_trip() {
-        let ui = UiState { active_filter: true, ..UiState::default() };
+        let ui = UiState {
+            active_filter: true,
+            ..UiState::default()
+        };
         let json = serde_json::to_string(&ui).unwrap();
         let loaded: UiState = serde_json::from_str(&json).unwrap();
         assert!(loaded.active_filter);
