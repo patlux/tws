@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 
@@ -51,7 +52,11 @@ pub fn list_sessions() -> Vec<String> {
 /// Each entry is `(session_name, last_attached_timestamp)`.
 pub fn list_tws_sessions_with_timestamps() -> Vec<(String, i64)> {
     let output = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}\t#{session_last_attached}"])
+        .args([
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{session_last_attached}",
+        ])
         .output();
 
     match output {
@@ -80,9 +85,21 @@ pub fn new_session(name: &str) -> Result<(), String> {
 
 /// Creates a new detached tmux session with the given name and working directory.
 pub fn new_session_in_dir(name: &str, cwd: &Path) -> Result<(), String> {
-    let output = Command::new("tmux")
-        .args(["new-session", "-d", "-s", name, "-c"])
-        .arg(cwd)
+    new_session_in_dir_with_command(name, cwd, &[])
+}
+
+/// Creates a new detached tmux session and runs a command without shell parsing.
+pub fn new_session_in_dir_with_command(
+    name: &str,
+    cwd: &Path,
+    command: &[OsString],
+) -> Result<(), String> {
+    let mut tmux = Command::new("tmux");
+    tmux.args(["new-session", "-d", "-s", name, "-c"]).arg(cwd);
+    if !command.is_empty() {
+        tmux.arg("--").args(command);
+    }
+    let output = tmux
         .output()
         .map_err(|err| format!("failed to run tmux: {}", err))?;
     if output.status.success() {

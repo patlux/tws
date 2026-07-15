@@ -1,11 +1,12 @@
 mod app;
+mod automation;
 mod components;
+mod config;
 mod core;
 mod event;
 mod git;
 mod import;
 mod theme;
-mod config;
 mod tui;
 
 use app::App;
@@ -29,29 +30,73 @@ struct Cli {
 enum Command {
     /// Import existing sessions from the selected backend into tws
     Import,
+    /// Create a collection if it does not already exist
+    Collection {
+        #[command(subcommand)]
+        command: CollectionCommand,
+    },
+    /// Create a thread if it does not already exist
+    Thread {
+        #[command(subcommand)]
+        command: ThreadCommand,
+    },
+    /// Create a managed session and optionally start a command in it
+    Spawn(automation::SpawnArgs),
+}
+
+#[derive(Subcommand)]
+enum CollectionCommand {
+    /// Idempotently create a collection
+    Ensure(automation::EnsureCollectionArgs),
+}
+
+#[derive(Subcommand)]
+enum ThreadCommand {
+    /// Idempotently create a thread in an existing collection
+    Ensure(automation::EnsureThreadArgs),
 }
 
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
 
     if let Some(backend) = cli.backend.as_deref()
-        && let Err(error) = mux::configure(backend) {
-            eprintln!("tws: {error}");
-            std::process::exit(2);
-        }
+        && let Err(error) = mux::configure(backend)
+    {
+        eprintln!("tws: {error}");
+        std::process::exit(2);
+    }
     if let Err(error) = mux::configure_config_dir(persistence::config_dir()) {
         eprintln!("tws: {error}");
         std::process::exit(2);
     }
-    if let Err(error) = mux::ensure_available() {
+    let needs_backend = !matches!(
+        &cli.command,
+        Some(Command::Collection { .. }) | Some(Command::Thread { .. })
+    );
+    if needs_backend
+        && let Err(error) = mux::ensure_available()
+    {
         eprintln!("tws: {error}");
         std::process::exit(1);
     }
 
-    match cli.command {
-        Some(Command::Import) => import::run(),
-        None => run_tui(),
+    let result = match cli.command {
+        Some(Command::Import) => import::run().map_err(|error| error.to_string()),
+        Some(Command::Collection {
+            command: CollectionCommand::Ensure(args),
+        }) => automation::ensure_collection(args),
+        Some(Command::Thread {
+            command: ThreadCommand::Ensure(args),
+        }) => automation::ensure_thread(args),
+        Some(Command::Spawn(args)) => automation::spawn(args),
+        None => return run_tui(),
+    };
+
+    if let Err(error) = result {
+        eprintln!("tws: {error}");
+        std::process::exit(1);
     }
+    Ok(())
 }
 
 fn run_tui() -> std::io::Result<()> {
@@ -82,7 +127,10 @@ fn run_tui() -> std::io::Result<()> {
     let _lock = match persistence::acquire_instance_lock() {
         persistence::LockState::Acquired(guard) => Some(guard),
         persistence::LockState::HeldByOther(pid) => {
-            eprintln!("tws: another instance is running (pid {}) — changes may overwrite each other", pid);
+            eprintln!(
+                "tws: another instance is running (pid {}) — changes may overwrite each other",
+                pid
+            );
             eprintln!("tws: press Enter to continue anyway, Ctrl+C to abort");
             let mut line = String::new();
             let _ = std::io::stdin().read_line(&mut line);

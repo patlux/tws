@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -163,6 +164,23 @@ pub fn new_session_in_dir(name: &str, cwd: &Path) -> Result<(), String> {
     match backend() {
         Backend::Tmux => tmux::commands::new_session_in_dir(name, cwd),
         Backend::Zellij => zellij::new_session(name, Some(cwd)),
+    }
+}
+
+/// Creates a session in a directory and starts a command without shell parsing.
+/// Zellij cannot currently accept an initial command through its background
+/// session API, so command spawning is explicitly tmux-only.
+pub fn new_session_in_dir_with_command(
+    name: &str,
+    cwd: &Path,
+    command: &[OsString],
+) -> Result<(), String> {
+    match backend() {
+        Backend::Tmux => tmux::commands::new_session_in_dir_with_command(name, cwd, command),
+        Backend::Zellij => Err(
+            "starting a command with `tws spawn` is not supported by the Zellij backend"
+                .to_string(),
+        ),
     }
 }
 

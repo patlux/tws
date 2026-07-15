@@ -190,6 +190,38 @@ tws --backend zellij        # launch the isolated Zellij edition
 tws --backend zellij import # import unmanaged Zellij sessions
 ```
 
+### Automation CLI
+
+Agents and scripts can create hierarchy entries and durable background workers without editing `state.json` directly:
+
+```sh
+tws collection ensure "Personal"
+tws thread ensure --collection "Personal" "TWS orchestration"
+
+tws spawn \
+  --collection "Personal" \
+  --thread "TWS orchestration" \
+  --label "implementation" \
+  --cwd /path/to/repository \
+  -- pi --name "TWS implementation" "Implement the feature and run tests."
+```
+
+Use `--ensure-hierarchy` on `tws spawn` to create missing collection/thread entries in one call, and `--reuse` to return an already-running session without executing the command again. `--json` is available on every automation command for machine-readable output:
+
+```sh
+tws spawn \
+  --collection "Personal" \
+  --thread "TWS orchestration" \
+  --label "review" \
+  --cwd /path/to/repository \
+  --ensure-hierarchy \
+  --reuse \
+  --json \
+  -- pi --name "Review worker" "Review the current changes."
+```
+
+The optional command after `--` is passed as literal arguments, not through a shell. Command startup is currently supported by the tmux backend; Zellij can create an empty session but rejects command startup. Hierarchy mutations respect TWS's instance lock: if the TUI is running, create missing collections/threads there first. Spawning into an existing hierarchy remains available while the TUI runs.
+
 The backend can also be selected with `TWS_BACKEND=tmux|zellij`. Set an absolute `TWS_CONFIG_DIR` to isolate state, UI state, locks, Pi status files, and recency data. Managed tmux sessions keep the `tws_`/`twsr_` prefixes; Zellij uses `twz_`/`twzr_`, so both editions can run concurrently.
 
 The status bar shows context-aware key hints for whatever is selected. The essentials:
