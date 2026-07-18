@@ -1710,7 +1710,11 @@ impl App {
         Ok(())
     }
 
-    /// Attach or switch to a tmux session by name.
+    /// Attach or switch to a multiplexer session by name.
+    ///
+    /// Latency invariant: after an external client exits, the retained TWS
+    /// frame is rendered before backend discovery, worktree lookup, agent scan,
+    /// or status reconciliation starts. Never call `do_refresh_sessions` here.
     pub(super) fn attach_to_session(
         &mut self,
         session_name: &str,
@@ -1721,22 +1725,43 @@ impl App {
                 Ok(()) => self.running = false,
                 Err(err) => {
                     self.set_error(format!("Failed to switch to session: {}", err));
-                    return Ok(());
                 }
             }
-        } else {
-            // Outside the multiplexer: suspend TUI, attach (blocks), then resume.
-            // Clear the main screen on both transitions so output left by prior
-            // Zellij clients never flashes between alternate screens.
-            tui::restore()?;
-            tui::clear_main_screen()?;
-            let _ = mux::attach_session(session_name);
-            tui::clear_main_screen()?;
-            *terminal = tui::init()?;
+            return Ok(());
         }
 
-        // Refresh sessions immediately after attach/switch
-        self.do_refresh_sessions();
+        // Outside the multiplexer: suspend TUI, attach (blocks), then resume.
+        // Clear the main screen on both transitions so output left by prior
+        // clients never flashes between alternate screens.
+        tui::restore()?;
+        tui::clear_main_screen()?;
+        let attach_result = mux::attach_session(session_name);
+
+        // Recover terminal ownership before interpreting the child outcome so
+        // attach failures are shown inside a usable TWS screen.
+        tui::clear_main_screen()?;
+        *terminal = tui::init()?;
+
+        match attach_result {
+            Ok(true) => {}
+            Ok(false) => self.set_error(format!(
+                "Failed to attach to {} session: client exited unsuccessfully",
+                mux::name()
+            )),
+            Err(err) => self.set_error(format!(
+                "Failed to attach to {} session: {}",
+                mux::name(), err
+            )),
+        }
+
+        // First frame first: no subprocess or filesystem discovery may move
+        // above this lifecycle boundary.
+        self.needs_redraw = true;
+        self.draw(terminal)?;
+        self.needs_redraw = false;
+
+        // Reconcile retained state only after the interface is visible again.
+        self.request_refresh();
         Ok(())
     }
 

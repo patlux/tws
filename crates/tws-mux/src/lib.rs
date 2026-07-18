@@ -210,7 +210,7 @@ pub fn attach_session(name: &str) -> std::io::Result<bool> {
         Backend::Tmux => tmux::commands::attach_session(name),
         Backend::Zellij => zellij::attach_session(name),
     };
-    if matches!(backend(), Backend::Zellij) {
+    if matches!(backend(), Backend::Zellij) && matches!(result, Ok(true)) {
         zellij::record_attach(name);
     }
     result

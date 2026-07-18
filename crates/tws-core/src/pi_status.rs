@@ -114,9 +114,10 @@ pub fn parse_status(data: &str, backend: BackendKind) -> Option<PiStatus> {
     })
 }
 
-/// Load all status files from `dir`. Missing directory or unreadable/invalid
-/// files simply yield fewer results.
-#[cfg(test)]
+/// Load all status files from `dir` without mutating the filesystem.
+/// Missing directories and unreadable or invalid files simply yield fewer results.
+/// Background refresh workers must use this read-only collector; pruning is
+/// reserved for accepted results on the main thread.
 pub fn load_all(dir: &Path, backend: BackendKind) -> Vec<PiStatus> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -270,6 +271,18 @@ mod tests {
     #[test]
     fn load_all_missing_dir_is_empty() {
         assert!(load_all(Path::new("/nonexistent/tws-pi-status"), BackendKind::Tmux).is_empty());
+    }
+
+    #[test]
+    fn background_load_is_read_only() {
+        let dir = temp_dir("load-read-only");
+        std::fs::write(dir.join("stale.json"), status_json("%3", "tws_x", "done", 0)).unwrap();
+
+        let loaded = load_all(&dir, BackendKind::Tmux);
+
+        assert_eq!(loaded.len(), 1);
+        assert!(dir.join("stale.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

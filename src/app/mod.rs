@@ -210,9 +210,10 @@ struct GridPreviewResult {
 
 /// Result of a background refresh or agent-only scan.
 struct RefreshResult {
-    /// Epoch at request time; results from before a synchronous refresh
-    /// are stale and dropped.
-    epoch: u64,
+    /// Monotonic request id. Only the newest request of each kind may apply.
+    request_id: u64,
+    /// Topology generation this result was collected against.
+    topology_generation: u64,
     /// `Some` for full refreshes, `None` for agent-only scans.
     sessions: Option<SessionsPayload>,
     agents: Vec<crate::core::model::AgentSession>,
@@ -363,12 +364,14 @@ pub struct App {
     grid_preview_rx: Receiver<GridPreviewResult>,
     /// True while a background pane capture is running.
     preview_in_flight: bool,
-    /// True while a background full refresh is running.
-    refresh_in_flight: bool,
-    /// True while a background agent-only scan is running.
-    scan_in_flight: bool,
-    /// Bumped by synchronous refreshes to invalidate in-flight async results.
-    refresh_epoch: u64,
+    /// Newest outstanding full-refresh request, if any.
+    active_refresh_request: Option<u64>,
+    /// Newest outstanding agent-only request, if any.
+    active_scan_request: Option<u64>,
+    /// Monotonic id source shared by all reconciliation requests.
+    next_refresh_request: u64,
+    /// Bumped when topology changes invalidate dependent agent scans.
+    topology_generation: u64,
     /// Selection restored from UiState, applied after the first refresh lands
     /// (session paths only resolve once active_sessions is populated).
     pending_selection_restore: Option<Vec<String>>,
@@ -523,9 +526,10 @@ impl App {
             grid_preview_tx,
             grid_preview_rx,
             preview_in_flight: false,
-            refresh_in_flight: false,
-            scan_in_flight: false,
-            refresh_epoch: 0,
+            active_refresh_request: None,
+            active_scan_request: None,
+            next_refresh_request: 0,
+            topology_generation: 0,
             pending_selection_restore: None,
             last_trigger_scan: Instant::now()
                 .checked_sub(TRIGGER_SCAN_DEBOUNCE)
@@ -745,14 +749,16 @@ impl App {
             self.poll_refresh_results();
 
             // Periodic session refresh (includes agent scan), off-thread.
-            if self.last_refresh.elapsed() >= REFRESH_INTERVAL && !self.refresh_in_flight {
+            if self.last_refresh.elapsed() >= REFRESH_INTERVAL
+                && self.active_refresh_request.is_none()
+            {
                 self.request_refresh();
             }
 
             // Hook-triggered agent scan (sub-250ms latency), debounced + off-thread.
             if self.check_agent_trigger()
-                && !self.scan_in_flight
-                && !self.refresh_in_flight
+                && self.active_scan_request.is_none()
+                && self.active_refresh_request.is_none()
                 && self.last_trigger_scan.elapsed() >= TRIGGER_SCAN_DEBOUNCE
             {
                 self.request_agent_scan();
@@ -873,16 +879,20 @@ mod tests {
     use super::*;
     use crate::config::palette::Palette;
 
-    #[test]
-    fn working_pi_status_does_not_force_tick_redraws() {
+    fn test_app() -> App {
         let palette = Palette::default();
-        let mut app = App::new(
+        App::new(
             AppState::empty(mux::Backend::Tmux),
             Theme::build(&palette),
             Keymap::default_bindings(),
             Vec::new(),
             Vec::new(),
-        );
+        )
+    }
+
+    #[test]
+    fn working_pi_status_does_not_force_tick_redraws() {
+        let mut app = test_app();
         app.state.pi_statuses.push(pi_status::PiStatus {
             pane_id: "%1".to_string(),
             tmux_session_name: "tws_test".to_string(),
@@ -891,5 +901,100 @@ mod tests {
         });
 
         assert!(!app.animation_active());
+    }
+
+    #[test]
+    fn stale_full_refresh_cannot_clear_newer_request() {
+        let mut app = test_app();
+        app.active_refresh_request = Some(2);
+        app.refresh_tx
+            .send(RefreshResult {
+                request_id: 1,
+                topology_generation: 0,
+                sessions: Some(SessionsPayload {
+                    live: Vec::new(),
+                    discoveries: Vec::new(),
+                }),
+                agents: Vec::new(),
+                pi_statuses: Vec::new(),
+                trigger_mtime: None,
+            })
+            .unwrap();
+
+        app.poll_refresh_results();
+
+        assert_eq!(app.active_refresh_request, Some(2));
+        assert_eq!(app.topology_generation, 0);
+    }
+
+    #[test]
+    fn agent_scan_from_old_topology_is_rejected() {
+        let mut app = test_app();
+        app.active_scan_request = Some(4);
+        app.topology_generation = 2;
+        app.refresh_tx
+            .send(RefreshResult {
+                request_id: 4,
+                topology_generation: 1,
+                sessions: None,
+                agents: Vec::new(),
+                pi_statuses: Vec::new(),
+                trigger_mtime: None,
+            })
+            .unwrap();
+
+        app.poll_refresh_results();
+
+        assert_eq!(app.active_scan_request, None);
+        assert_eq!(app.topology_generation, 2);
+    }
+
+    #[test]
+    fn accepted_full_refresh_invalidates_agent_scan() {
+        let mut app = test_app();
+        app.active_refresh_request = Some(5);
+        app.active_scan_request = Some(4);
+        app.refresh_tx
+            .send(RefreshResult {
+                request_id: 5,
+                topology_generation: 0,
+                sessions: Some(SessionsPayload {
+                    live: Vec::new(),
+                    discoveries: Vec::new(),
+                }),
+                agents: Vec::new(),
+                pi_statuses: Vec::new(),
+                trigger_mtime: None,
+            })
+            .unwrap();
+
+        app.poll_refresh_results();
+
+        assert_eq!(app.active_refresh_request, None);
+        assert_eq!(app.active_scan_request, None);
+        assert_eq!(app.topology_generation, 1);
+    }
+
+    #[test]
+    fn post_attach_path_draws_before_requesting_refresh() {
+        let source = include_str!("input.rs");
+        let start = source
+            .find("pub(super) fn attach_to_session")
+            .expect("attach_to_session exists");
+        let end = source[start..]
+            .find("pub(super) fn toggle_expand_all")
+            .map(|offset| start + offset)
+            .expect("next method exists");
+        let body = &source[start..end];
+        let draw = body.find("self.draw(terminal)?").expect("resume draw exists");
+        let refresh = body
+            .find("self.request_refresh()")
+            .expect("async refresh exists");
+
+        assert!(draw < refresh, "post-attach refresh must start after the first frame");
+        assert!(
+            !body.contains("self.do_refresh_sessions()"),
+            "post-attach path must never perform synchronous reconciliation"
+        );
     }
 }

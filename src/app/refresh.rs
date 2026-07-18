@@ -94,11 +94,11 @@ impl App {
         }
     }
 
-    /// Synchronous refresh — used right after user actions (kill, rename,
-    /// attach) where the very next frame must reflect the new tmux state.
-    /// Bumps the epoch so any in-flight background refresh gets discarded.
+    /// Synchronous refresh — reserved for mutations whose next frame must
+    /// confirm the backend change. Never call this from post-attach resume:
+    /// returning control to the user must not wait on discovery or scans.
     pub(super) fn do_refresh_sessions(&mut self) {
-        self.refresh_epoch += 1;
+        self.invalidate_background_refreshes();
         self.refresh_worktree_sessions();
         let live = mux::list_managed_sessions_with_timestamps();
         self.state.refresh_sessions(&live);
@@ -108,12 +108,27 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Kick off a full refresh (tmux sessions + git worktrees + agent scan +
-    /// pi statuses) on a background thread. Results land in poll_refresh_results.
+    fn next_refresh_request_id(&mut self) -> u64 {
+        self.next_refresh_request = self.next_refresh_request.wrapping_add(1);
+        self.next_refresh_request
+    }
+
+    fn invalidate_background_refreshes(&mut self) {
+        self.active_refresh_request = None;
+        self.active_scan_request = None;
+        self.topology_generation = self.topology_generation.wrapping_add(1);
+    }
+
+    /// Kick off a latest-wins full reconciliation. Collection is entirely
+    /// off-thread and read-only; only the newest applicable result is applied.
     pub(super) fn request_refresh(&mut self) {
-        self.refresh_in_flight = true;
+        let request_id = self.next_refresh_request_id();
+        self.active_refresh_request = Some(request_id);
+        // A full reconciliation supersedes any agent-only scan collected from
+        // the retained topology.
+        self.active_scan_request = None;
         self.last_refresh = Instant::now();
-        let epoch = self.refresh_epoch;
+        let topology_generation = self.topology_generation;
         let tx = self.refresh_tx.clone();
         let worktree_jobs = self.expanded_worktree_jobs();
         let status_dir = persistence::config_dir().join("pi-status");
@@ -136,18 +151,13 @@ impl App {
             // apply_agent_scan filters down to active sessions.
             let session_names: Vec<String> = live.iter().map(|(n, _)| n.clone()).collect();
             let agents = mux::scan_agents(&session_names);
-            let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
-            let pi_statuses = pi_status::load_and_prune(
-                &status_dir,
-                &live_panes,
-                PI_STATUS_MAX_AGE,
-                mux::backend(),
-            );
+            let pi_statuses = pi_status::load_all(&status_dir, mux::backend());
             let trigger_mtime = std::fs::metadata(&trigger_path)
                 .and_then(|m| m.modified())
                 .ok();
             let _ = tx.send(RefreshResult {
-                epoch,
+                request_id,
+                topology_generation,
                 sessions: Some(SessionsPayload { live, discoveries }),
                 agents,
                 pi_statuses,
@@ -156,11 +166,12 @@ impl App {
         });
     }
 
-    /// Kick off an agent-only scan on a background thread (hook-triggered).
+    /// Kick off a latest-wins agent-only scan on a background thread.
     pub(super) fn request_agent_scan(&mut self) {
-        self.scan_in_flight = true;
+        let request_id = self.next_refresh_request_id();
+        self.active_scan_request = Some(request_id);
         self.last_trigger_scan = Instant::now();
-        let epoch = self.refresh_epoch;
+        let topology_generation = self.topology_generation;
         let tx = self.refresh_tx.clone();
         let session_names: Vec<String> = self
             .state
@@ -172,18 +183,13 @@ impl App {
         let trigger_path = persistence::config_dir().join("agent.trigger");
         std::thread::spawn(move || {
             let agents = mux::scan_agents(&session_names);
-            let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
-            let pi_statuses = pi_status::load_and_prune(
-                &status_dir,
-                &live_panes,
-                PI_STATUS_MAX_AGE,
-                mux::backend(),
-            );
+            let pi_statuses = pi_status::load_all(&status_dir, mux::backend());
             let trigger_mtime = std::fs::metadata(&trigger_path)
                 .and_then(|m| m.modified())
                 .ok();
             let _ = tx.send(RefreshResult {
-                epoch,
+                request_id,
+                topology_generation,
                 sessions: None,
                 agents,
                 pi_statuses,
@@ -192,31 +198,59 @@ impl App {
         });
     }
 
-    /// Apply background refresh/scan results on the main thread.
+    /// Apply background results on the main thread. A stale completion cannot
+    /// clear a newer request's in-flight marker or mutate visible state.
     pub(super) fn poll_refresh_results(&mut self) {
         while let Ok(result) = self.refresh_rx.try_recv() {
-            if result.sessions.is_some() {
-                self.refresh_in_flight = false;
-            } else {
-                self.scan_in_flight = false;
-            }
-            // Stale: a synchronous refresh ran after this was requested.
-            if result.epoch != self.refresh_epoch {
-                continue;
-            }
             if let Some(payload) = result.sessions {
+                if self.active_refresh_request != Some(result.request_id) {
+                    continue;
+                }
+                self.active_refresh_request = None;
+                self.active_scan_request = None;
                 self.apply_worktree_discoveries(payload.discoveries);
                 self.state.refresh_sessions(&payload.live);
                 self.prune_marked_sessions();
+                self.topology_generation = self.topology_generation.wrapping_add(1);
+                self.apply_agent_scan(result.agents, result.pi_statuses, result.trigger_mtime);
+                self.prune_pi_statuses();
+
+                if let Some(sel) = self.pending_selection_restore.take() {
+                    self.tree_state.select(sel);
+                    self.ensure_visible_tree_selection();
+                }
+                self.needs_redraw = true;
+                continue;
+            }
+
+            if self.active_scan_request != Some(result.request_id) {
+                continue;
+            }
+            self.active_scan_request = None;
+            if result.topology_generation != self.topology_generation {
+                continue;
             }
             self.apply_agent_scan(result.agents, result.pi_statuses, result.trigger_mtime);
-            // Re-apply the persisted selection once real session data exists.
-            if let Some(sel) = self.pending_selection_restore.take() {
-                self.tree_state.select(sel);
-                self.ensure_visible_tree_selection();
-            }
+            self.prune_pi_statuses();
             self.needs_redraw = true;
         }
+    }
+
+    /// Pruning is deliberately main-thread-only and runs only after accepting
+    /// a current result. Superseded background workers remain read-only.
+    fn prune_pi_statuses(&self) {
+        let live_panes: HashSet<String> = self
+            .state
+            .agent_sessions
+            .iter()
+            .map(|agent| agent.pane_id.clone())
+            .collect();
+        let _ = pi_status::load_and_prune(
+            &persistence::config_dir().join("pi-status"),
+            &live_panes,
+            PI_STATUS_MAX_AGE,
+            mux::backend(),
+        );
     }
 
     /// Worktree discovery jobs for all expanded, configured threads.
