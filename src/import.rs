@@ -5,7 +5,7 @@ use crate::core::persistence;
 use tws_mux as mux;
 
 pub fn run() -> io::Result<()> {
-    let all_sessions = mux::list_sessions();
+    let all_sessions = mux::list_sessions().map_err(io::Error::other)?;
     let unmanaged: Vec<&String> = all_sessions
         .iter()
         .filter(|name| !mux::is_managed_name(name))

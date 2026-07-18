@@ -208,7 +208,7 @@ pub fn spawn(args: SpawnArgs) -> Result<(), String> {
         &collections[col_idx].threads[thread_idx].name,
         &label,
     );
-    let existing = mux::list_sessions()
+    let existing = mux::list_sessions()?
         .into_iter()
         .any(|name| name == session_name);
     if existing {
@@ -238,7 +238,7 @@ pub fn spawn(args: SpawnArgs) -> Result<(), String> {
         mux::new_session_in_dir_with_command(&session_name, &cwd, &args.command)?;
     }
 
-    if !mux::list_sessions()
+    if !mux::list_sessions()?
         .into_iter()
         .any(|name| name == session_name)
     {

@@ -35,17 +35,34 @@ fn output(args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&result.stdout).into_owned())
 }
 
-pub fn list_sessions() -> Vec<String> {
-    output(&["list-sessions", "--short"])
-        .map(|stdout| {
-            stdout
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_string)
-                .collect()
+/// Returns the names of all running zellij sessions.
+/// A missing zellij server/socket is `Ok(vec![])`; real failures are `Err`
+/// so callers can retain their last-known state instead of wiping it.
+pub fn list_sessions() -> Result<Vec<String>, String> {
+    let result = Command::new("zellij")
+        .args(["list-sessions", "--short"])
+        .output()
+        .map_err(|err| format!("failed to run zellij: {err}"))?;
+    if result.status.success() {
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        return Ok(stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect());
+    }
+    let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
+    // No server yet: the socket dir simply doesn't exist.
+    if stderr.to_ascii_lowercase().contains("no such file") {
+        Ok(Vec::new())
+    } else {
+        Err(if stderr.is_empty() {
+            "zellij list-sessions failed".to_string()
+        } else {
+            stderr
         })
-        .unwrap_or_default()
+    }
 }
 
 fn recency_file() -> PathBuf {
@@ -82,16 +99,16 @@ pub fn record_attach(name: &str) {
     save_recency(&recency);
 }
 
-pub fn list_managed_sessions_with_timestamps() -> Vec<(String, i64)> {
+pub fn list_managed_sessions_with_timestamps() -> Result<Vec<(String, i64)>, String> {
     let recency = load_recency();
-    list_sessions()
+    Ok(list_sessions()?
         .into_iter()
         .filter(|name| crate::is_managed_name(name))
         .map(|name| {
             let timestamp = recency.get(&name).copied().unwrap_or(0);
             (name, timestamp)
         })
-        .collect()
+        .collect())
 }
 
 pub fn new_session(name: &str, cwd: Option<&Path>) -> Result<(), String> {
@@ -158,8 +175,11 @@ pub fn switch_session(name: &str, pane_id: Option<&str>) -> Result<(), String> {
 }
 
 pub fn attach_session(name: &str) -> std::io::Result<bool> {
+    // Scrub a stale inherited ZELLIJ env so the attach isn't misdetected as
+    // running inside a live zellij client.
     Command::new("zellij")
         .args(["attach", name])
+        .env_remove("ZELLIJ")
         .status()
         .map(|status| status.success())
 }
@@ -205,27 +225,40 @@ fn parse_panes(data: &str) -> Vec<PaneInfo> {
     serde_json::from_str(data).unwrap_or_default()
 }
 
-fn list_panes(session_name: &str) -> Vec<PaneInfo> {
-    output(&[
-        "--session",
-        session_name,
-        "action",
-        "list-panes",
-        "--json",
-        "--all",
-    ])
-    .map(|data| parse_panes(&data))
-    .unwrap_or_default()
+/// `Ok(vec![])` when the session has no panes to report; `Err` on real
+/// failures so a scan error isn't mistaken for "no agents".
+fn list_panes(session_name: &str) -> Result<Vec<PaneInfo>, String> {
+    let result = Command::new("zellij")
+        .args([
+            "--session",
+            session_name,
+            "action",
+            "list-panes",
+            "--json",
+            "--all",
+        ])
+        .output()
+        .map_err(|err| format!("failed to run zellij: {err}"))?;
+    if result.status.success() {
+        Ok(parse_panes(&String::from_utf8_lossy(&result.stdout)))
+    } else {
+        let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("zellij list-panes failed for {session_name}")
+        } else {
+            stderr
+        })
+    }
 }
 
-pub fn scan_agents(session_names: &[String]) -> Vec<AgentSession> {
+pub fn scan_agents(session_names: &[String]) -> Result<Vec<AgentSession>, String> {
     let sessions: HashSet<&str> = session_names.iter().map(String::as_str).collect();
     let mut result = Vec::new();
-    for session_name in list_sessions() {
+    for session_name in list_sessions()? {
         if !sessions.contains(session_name.as_str()) {
             continue;
         }
-        for pane in list_panes(&session_name) {
+        for pane in list_panes(&session_name)? {
             if pane.is_plugin || pane.exited {
                 continue;
             }
@@ -253,7 +286,7 @@ pub fn scan_agents(session_names: &[String]) -> Vec<AgentSession> {
             });
         }
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]

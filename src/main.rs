@@ -73,9 +73,7 @@ fn main() -> std::io::Result<()> {
         &cli.command,
         Some(Command::Collection { .. }) | Some(Command::Thread { .. })
     );
-    if needs_backend
-        && let Err(error) = mux::ensure_available()
-    {
+    if needs_backend && let Err(error) = mux::ensure_available() {
         eprintln!("tws: {error}");
         std::process::exit(1);
     }

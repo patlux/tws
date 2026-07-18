@@ -139,14 +139,19 @@ pub fn is_managed_name(name: &str) -> bool {
     backend().is_managed_name(name)
 }
 
-pub fn list_sessions() -> Vec<String> {
+/// Names of all running sessions. `Err` means discovery itself failed —
+/// callers should retain their last-known state rather than treat it as
+/// "no sessions".
+pub fn list_sessions() -> Result<Vec<String>, String> {
     match backend() {
         Backend::Tmux => tmux::commands::list_sessions(),
         Backend::Zellij => zellij::list_sessions(),
     }
 }
 
-pub fn list_managed_sessions_with_timestamps() -> Vec<(String, i64)> {
+/// Managed sessions with last-attached timestamps. Same error contract as
+/// [`list_sessions`].
+pub fn list_managed_sessions_with_timestamps() -> Result<Vec<(String, i64)>, String> {
     match backend() {
         Backend::Tmux => tmux::commands::list_tws_sessions_with_timestamps(),
         Backend::Zellij => zellij::list_managed_sessions_with_timestamps(),
@@ -205,6 +210,15 @@ pub fn switch_client(name: &str) -> Result<(), String> {
     }
 }
 
+/// True when a failed `switch_client` means there is no live client to
+/// switch (stale env) and the caller should retry with an external attach.
+pub fn switch_error_indicates_no_client(err: &str) -> bool {
+    match backend() {
+        Backend::Tmux => tmux::commands::switch_error_indicates_no_client(err),
+        Backend::Zellij => false,
+    }
+}
+
 pub fn attach_session(name: &str) -> std::io::Result<bool> {
     let result = match backend() {
         Backend::Tmux => tmux::commands::attach_session(name),
@@ -240,7 +254,9 @@ pub fn capture_pane(session_name: &str, pane_id: &str) -> Option<String> {
     }
 }
 
-pub fn scan_agents(session_names: &[String]) -> Vec<AgentSession> {
+/// Detect agents in the given sessions. `Err` means the scan itself
+/// failed — callers should retain the previous agent list.
+pub fn scan_agents(session_names: &[String]) -> Result<Vec<AgentSession>, String> {
     match backend() {
         Backend::Tmux => tmux::agent_scan::scan_agents(session_names),
         Backend::Zellij => zellij::scan_agents(session_names),
