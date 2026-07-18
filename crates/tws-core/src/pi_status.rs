@@ -130,9 +130,10 @@ pub fn load_all(dir: &Path, backend: BackendKind) -> Vec<PiStatus> {
             continue;
         }
         if let Ok(data) = std::fs::read_to_string(&path)
-            && let Some(status) = parse_status(&data, backend) {
-                result.push(status);
-            }
+            && let Some(status) = parse_status(&data, backend)
+        {
+            result.push(status);
+        }
     }
     result
 }
@@ -144,11 +145,13 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Load all statuses and prune stale files in a single directory pass.
+/// Load statuses and filter stale dead-pane entries in a single directory pass.
 ///
-/// Files whose pane is no longer live and whose last update is older than
-/// `max_age` are deleted and excluded from the result. Recent terminal markers
-/// (`done`/`cancelled`/`incomplete`/`failed`) stay visible even after the Pi process exited.
+/// TWS never deletes these files: the companion writer owns their lifecycle,
+/// and unlinking a shared pathname cannot be made race-free without writer
+/// cooperation. Files whose pane is no longer live and whose last update is
+/// older than `max_age` are excluded from the returned UI snapshot. Recent
+/// terminal markers (`done`/`cancelled`/`incomplete`/`failed`) stay visible.
 pub fn load_and_prune(
     dir: &Path,
     live_pane_ids: &HashSet<String>,
@@ -176,7 +179,6 @@ pub fn load_and_prune(
         if !live_pane_ids.contains(&status.pane_id)
             && now.saturating_sub(status.updated_at_ms) > max_age_ms
         {
-            let _ = std::fs::remove_file(&path);
             continue;
         }
         result.push(status);
@@ -197,7 +199,8 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tws-pi-status-{}-{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tws-pi-status-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -205,7 +208,11 @@ mod tests {
 
     #[test]
     fn parse_valid_status() {
-        let s = parse_status(&status_json("%12", "tws_work_proj", "working", 1000), BackendKind::Tmux).unwrap();
+        let s = parse_status(
+            &status_json("%12", "tws_work_proj", "working", 1000),
+            BackendKind::Tmux,
+        )
+        .unwrap();
         assert_eq!(s.pane_id, "%12");
         assert_eq!(s.tmux_session_name, "tws_work_proj");
         assert_eq!(s.work_state, PiWorkState::Working);
@@ -232,7 +239,8 @@ mod tests {
             ("failed", PiWorkState::Failed),
             ("error", PiWorkState::Failed),
         ] {
-            let s = parse_status(&status_json("%3", "tws_a_b", state, 5), BackendKind::Tmux).unwrap();
+            let s =
+                parse_status(&status_json("%3", "tws_a_b", state, 5), BackendKind::Tmux).unwrap();
             assert_eq!(s.work_state, expected);
         }
     }
@@ -245,7 +253,11 @@ mod tests {
 
     #[test]
     fn parse_unknown_state_is_forward_compatible() {
-        let s = parse_status(&status_json("%1", "tws_x", "compacting", 1), BackendKind::Tmux).unwrap();
+        let s = parse_status(
+            &status_json("%1", "tws_x", "compacting", 1),
+            BackendKind::Tmux,
+        )
+        .unwrap();
         assert_eq!(s.work_state, PiWorkState::Unknown);
     }
 
@@ -276,7 +288,11 @@ mod tests {
     #[test]
     fn background_load_is_read_only() {
         let dir = temp_dir("load-read-only");
-        std::fs::write(dir.join("stale.json"), status_json("%3", "tws_x", "done", 0)).unwrap();
+        std::fs::write(
+            dir.join("stale.json"),
+            status_json("%3", "tws_x", "done", 0),
+        )
+        .unwrap();
 
         let loaded = load_all(&dir, BackendKind::Tmux);
 
@@ -286,30 +302,37 @@ mod tests {
     }
 
     #[test]
-    fn prune_removes_only_stale_dead_panes() {
+    fn prune_filters_stale_dead_panes_without_unlinking_writer_files() {
         let dir = temp_dir("prune");
         let now = now_ms();
         // Live pane, ancient status → kept.
-        std::fs::write(dir.join("live.json"), status_json("%1", "tws_x", "working", 0)).unwrap();
+        std::fs::write(
+            dir.join("live.json"),
+            status_json("%1", "tws_x", "working", 0),
+        )
+        .unwrap();
         // Dead pane, fresh status → kept (recent terminal marker).
-        std::fs::write(dir.join("fresh.json"), status_json("%2", "tws_x", "done", now)).unwrap();
-        // Dead pane, ancient status → removed.
-        std::fs::write(dir.join("stale.json"), status_json("%3", "tws_x", "done", 0)).unwrap();
+        std::fs::write(
+            dir.join("fresh.json"),
+            status_json("%2", "tws_x", "done", now),
+        )
+        .unwrap();
+        // Dead pane, ancient status → filtered from the UI snapshot.
+        std::fs::write(
+            dir.join("stale.json"),
+            status_json("%3", "tws_x", "done", 0),
+        )
+        .unwrap();
 
         let live: HashSet<String> = ["%1".to_string()].into_iter().collect();
-        let loaded = load_and_prune(
-            &dir,
-            &live,
-            Duration::from_secs(60 * 60),
-            BackendKind::Tmux,
-        );
+        let loaded = load_and_prune(&dir, &live, Duration::from_secs(60 * 60), BackendKind::Tmux);
 
         let panes: Vec<&str> = loaded.iter().map(|s| s.pane_id.as_str()).collect();
         assert!(panes.contains(&"%1"));
         assert!(panes.contains(&"%2"));
         assert!(!panes.contains(&"%3"));
-        // The stale file is gone from disk too.
-        assert!(!dir.join("stale.json").exists());
+        // Writer-owned sidecars are never unlinked by TWS.
+        assert!(dir.join("stale.json").exists());
         assert!(dir.join("fresh.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

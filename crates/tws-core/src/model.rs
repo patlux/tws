@@ -50,7 +50,7 @@ pub struct WorktreeSession {
 }
 
 /// Which AI coding agent is running in a tmux pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentType {
     ClaudeCode,
     Codex,
@@ -68,7 +68,7 @@ impl AgentType {
 
     pub fn icon(&self) -> &'static str {
         match self {
-            AgentType::ClaudeCode => "\u{2733}",  // ✳ eight spoked asterisk (matches Claude's pane title symbol)
+            AgentType::ClaudeCode => "\u{2733}", // ✳ eight spoked asterisk (matches Claude's pane title symbol)
             AgentType::Codex => ">_",
             AgentType::Pi => "π",
         }
@@ -161,7 +161,11 @@ pub fn tmux_root_session_prefix(thread_name: &str) -> String {
 /// Format: `twsr_{thread_slug}_{label_slug}`
 #[cfg(test)]
 pub fn tmux_root_session_name_labeled(thread_name: &str, label: &str) -> String {
-    format!("{}_{}", tmux_root_session_prefix(thread_name), slugify(label))
+    format!(
+        "{}_{}",
+        tmux_root_session_prefix(thread_name),
+        slugify(label)
+    )
 }
 
 /// Generates the base prefix for tmux session names for a given collection/thread.
@@ -177,7 +181,11 @@ pub fn tmux_session_prefix(collection_name: &str, thread_name: &str) -> String {
 /// Format: `tws_{collection_slug}_{thread_slug}_{label_slug}`
 #[cfg(test)]
 pub fn tmux_session_name_labeled(collection_name: &str, thread_name: &str, label: &str) -> String {
-    format!("{}_{}", tmux_session_prefix(collection_name, thread_name), slugify(label))
+    format!(
+        "{}_{}",
+        tmux_session_prefix(collection_name, thread_name),
+        slugify(label)
+    )
 }
 
 #[cfg(test)]
@@ -269,10 +277,7 @@ mod tests {
 
     #[test]
     fn tmux_root_session_prefix_format() {
-        assert_eq!(
-            tmux_root_session_prefix("general"),
-            "twsr_general"
-        );
+        assert_eq!(tmux_root_session_prefix("general"), "twsr_general");
         assert_eq!(
             tmux_root_session_prefix("My Quick Thread"),
             "twsr_my-quick-thread"

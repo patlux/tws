@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use super::model::{AgentSession, AgentType, Collection, Thread, Session, WorktreeSession};
+use super::model::{AgentSession, AgentType, Collection, Session, Thread, WorktreeSession};
 use super::pi_status::{PiIndicator, PiStatus, PiWorkState};
 use crate::naming::BackendKind;
 
@@ -19,8 +19,6 @@ pub struct AppState {
     /// collections left empty) are treated as hidden. Persisted in UiState.
     pub active_filter: bool,
 }
-
-
 
 /// A single agent flattened out of the collection/thread/session hierarchy.
 /// Carries both display strings and the index tuple needed to produce `SelectedItem::Agent`.
@@ -106,12 +104,13 @@ impl AppState {
                 let second = &selected[1];
                 // Try regular thread first (col_uuid + thread_uuid)
                 if let Some(col_idx) = self.find_collection_idx(first)
-                    && let Some(thread_idx) = self.find_thread_idx(col_idx, second) {
-                        if self.thread_is_hidden(col_idx, thread_idx) {
-                            return SelectedItem::None;
-                        }
-                        return SelectedItem::Thread(col_idx, thread_idx);
+                    && let Some(thread_idx) = self.find_thread_idx(col_idx, second)
+                {
+                    if self.thread_is_hidden(col_idx, thread_idx) {
+                        return SelectedItem::None;
                     }
+                    return SelectedItem::Thread(col_idx, thread_idx);
+                }
                 // Try root session (thread_uuid + session_name)
                 if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(first) {
                     if self.thread_is_hidden(col_idx, thread_idx) {
@@ -119,11 +118,16 @@ impl AppState {
                     }
                     let thread = &self.collections[col_idx].threads[thread_idx];
                     let sessions = self.sessions_for_thread(thread.id);
-                    if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == *second) {
+                    if let Some(sess_idx) =
+                        sessions.iter().position(|s| s.tmux_session_name == *second)
+                    {
                         return SelectedItem::Session(col_idx, thread_idx, sess_idx);
                     }
                     let worktrees = self.worktrees_for_thread(thread.id);
-                    if let Some(wt_idx) = worktrees.iter().position(|w| w.tmux_session_name == *second) {
+                    if let Some(wt_idx) = worktrees
+                        .iter()
+                        .position(|w| w.tmux_session_name == *second)
+                    {
                         return SelectedItem::Worktree(col_idx, thread_idx, wt_idx);
                     }
                 }
@@ -132,21 +136,31 @@ impl AppState {
             3 => {
                 // Try regular session: col / thread / session
                 if let Some(col_idx) = self.find_collection_idx(&selected[0])
-                    && let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1]) {
-                        if self.thread_is_hidden(col_idx, thread_idx) {
-                            return SelectedItem::None;
-                        }
-                        let thread = &self.collections[col_idx].threads[thread_idx];
-                        let sessions = self.sessions_for_thread(thread.id);
-                        if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[2]) {
-                            return SelectedItem::Session(col_idx, thread_idx, sess_idx);
-                        }
-                        let worktrees = self.worktrees_for_thread(thread.id);
-                        if let Some(wt_idx) = worktrees.iter().position(|w| w.tmux_session_name == selected[2]) {
-                            return SelectedItem::Worktree(col_idx, thread_idx, wt_idx);
-                        }
-                        return SelectedItem::Thread(col_idx, thread_idx);
+                    && let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1])
+                {
+                    if self.thread_is_hidden(col_idx, thread_idx) {
+                        return SelectedItem::None;
                     }
+                    let thread = &self.collections[col_idx].threads[thread_idx];
+                    let sessions = self.sessions_for_thread(thread.id);
+                    if let Some(sess_idx) = sessions
+                        .iter()
+                        .position(|s| s.tmux_session_name == selected[2])
+                    {
+                        return SelectedItem::Session(col_idx, thread_idx, sess_idx);
+                    }
+                    let worktrees = self.worktrees_for_thread(thread.id);
+                    if let Some(wt_idx) = worktrees
+                        .iter()
+                        .position(|w| w.tmux_session_name == selected[2])
+                    {
+                        return SelectedItem::Worktree(col_idx, thread_idx, wt_idx);
+                    }
+                    // The session/worktree this path pointed at is gone.
+                    // Never silently retarget to the parent thread —
+                    // Rename/Delete/Enter would act on the wrong item.
+                    return SelectedItem::None;
+                }
                 // Try root agent: thread / session / pane_id
                 if let Some((col_idx, thread_idx)) = self.find_root_thread_by_uuid(&selected[0]) {
                     if self.thread_is_hidden(col_idx, thread_idx) {
@@ -154,15 +168,26 @@ impl AppState {
                     }
                     let thread = &self.collections[col_idx].threads[thread_idx];
                     let sessions = self.sessions_for_thread(thread.id);
-                    if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[1]) {
+                    if let Some(sess_idx) = sessions
+                        .iter()
+                        .position(|s| s.tmux_session_name == selected[1])
+                    {
                         let agents = self.agents_for_session(&selected[1]);
-                        if let Some(agent_idx) = agents.iter().position(|a| a.pane_id == selected[2]) {
+                        if let Some(agent_idx) =
+                            agents.iter().position(|a| a.pane_id == selected[2])
+                        {
                             return SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx);
                         }
-                        return SelectedItem::Session(col_idx, thread_idx, sess_idx);
+                        // Stale agent path (pane gone): resolving to the
+                        // parent session would retarget Enter/Rename to the
+                        // wrong item.
+                        return SelectedItem::None;
                     }
                     let worktrees = self.worktrees_for_thread(thread.id);
-                    if let Some(wt_idx) = worktrees.iter().position(|w| w.tmux_session_name == selected[1]) {
+                    if let Some(wt_idx) = worktrees
+                        .iter()
+                        .position(|w| w.tmux_session_name == selected[1])
+                    {
                         return SelectedItem::Worktree(col_idx, thread_idx, wt_idx);
                     }
                 }
@@ -171,20 +196,27 @@ impl AppState {
             4 => {
                 // Regular agent: col / thread / session / pane_id
                 if let Some(col_idx) = self.find_collection_idx(&selected[0])
-                    && let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1]) {
-                        if self.thread_is_hidden(col_idx, thread_idx) {
-                            return SelectedItem::None;
-                        }
-                        let thread = &self.collections[col_idx].threads[thread_idx];
-                        let sessions = self.sessions_for_thread(thread.id);
-                        if let Some(sess_idx) = sessions.iter().position(|s| s.tmux_session_name == selected[2]) {
-                            let agents = self.agents_for_session(&selected[2]);
-                            if let Some(agent_idx) = agents.iter().position(|a| a.pane_id == selected[3]) {
-                                return SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx);
-                            }
-                            return SelectedItem::Session(col_idx, thread_idx, sess_idx);
-                        }
+                    && let Some(thread_idx) = self.find_thread_idx(col_idx, &selected[1])
+                {
+                    if self.thread_is_hidden(col_idx, thread_idx) {
+                        return SelectedItem::None;
                     }
+                    let thread = &self.collections[col_idx].threads[thread_idx];
+                    let sessions = self.sessions_for_thread(thread.id);
+                    if let Some(sess_idx) = sessions
+                        .iter()
+                        .position(|s| s.tmux_session_name == selected[2])
+                    {
+                        let agents = self.agents_for_session(&selected[2]);
+                        if let Some(agent_idx) =
+                            agents.iter().position(|a| a.pane_id == selected[3])
+                        {
+                            return SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx);
+                        }
+                        // Stale agent path — see the root-agent branch above.
+                        return SelectedItem::None;
+                    }
+                }
                 SelectedItem::None
             }
             _ => SelectedItem::None,
@@ -209,9 +241,10 @@ impl AppState {
 
     pub fn rename_thread(&mut self, col_idx: usize, thread_idx: usize, new_name: String) {
         if let Some(col) = self.collections.get_mut(col_idx)
-            && let Some(thread) = col.threads.get_mut(thread_idx) {
-                thread.name = new_name;
-            }
+            && let Some(thread) = col.threads.get_mut(thread_idx)
+        {
+            thread.name = new_name;
+        }
     }
 
     pub fn hide_collection(&mut self, idx: usize) -> bool {
@@ -299,7 +332,9 @@ impl AppState {
     }
 
     fn thread_has_live_session(&self, thread_id: Uuid) -> bool {
-        self.active_sessions.iter().any(|s| s.thread_id == thread_id)
+        self.active_sessions
+            .iter()
+            .any(|s| s.thread_id == thread_id)
     }
 
     pub fn thread_is_visible(&self, col_idx: usize, thread_idx: usize) -> bool {
@@ -314,9 +349,10 @@ impl AppState {
 
     pub fn delete_thread(&mut self, col_idx: usize, thread_idx: usize) {
         if let Some(col) = self.collections.get_mut(col_idx)
-            && thread_idx < col.threads.len() {
-                col.threads.remove(thread_idx);
-            }
+            && thread_idx < col.threads.len()
+        {
+            col.threads.remove(thread_idx);
+        }
     }
 
     /// Get the name of a selected item (for pre-filling rename input).
@@ -333,23 +369,25 @@ impl AppState {
                 let worktrees = self.worktrees_for_thread(thread_id);
                 worktrees.get(*wt_idx).map(|w| w.display_name.clone())
             }
-            SelectedItem::Collection(idx) => {
-                self.collections.get(*idx).map(|c| c.name.clone())
-            }
+            SelectedItem::Collection(idx) => self.collections.get(*idx).map(|c| c.name.clone()),
             SelectedItem::Thread(col_idx, thread_idx) => self
                 .collections
                 .get(*col_idx)
                 .and_then(|c| c.threads.get(*thread_idx))
                 .map(|p| p.name.clone()),
-            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
-                self.resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
-                    .map(|a| a.display_name.clone())
-            }
+            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => self
+                .resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
+                .map(|a| a.display_name.clone()),
         }
     }
 
     /// Generate a labeled session name for a thread using the user-provided label.
-    pub fn make_session_name(&self, col_idx: usize, thread_idx: usize, label: &str) -> Option<String> {
+    pub fn make_session_name(
+        &self,
+        col_idx: usize,
+        thread_idx: usize,
+        label: &str,
+    ) -> Option<String> {
         let col = self.collections.get(col_idx)?;
         let thread = col.threads.get(thread_idx)?;
         if col.is_root {
@@ -377,7 +415,11 @@ impl AppState {
             .filter_map(|a| a.pin_slot)
             .collect();
         let slot = (0u8..=9).find(|s| !used.contains(s))?;
-        if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == pane_id) {
+        if let Some(agent) = self
+            .agent_sessions
+            .iter_mut()
+            .find(|a| a.pane_id == pane_id)
+        {
             agent.pin_slot = Some(slot);
             Some(slot)
         } else {
@@ -413,7 +455,11 @@ impl AppState {
             .find(|a| a.pin_slot == Some(slot))
             .map(|a| a.pane_id.clone());
 
-        if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == pane_id) {
+        if let Some(agent) = self
+            .agent_sessions
+            .iter_mut()
+            .find(|a| a.pane_id == pane_id)
+        {
             agent.pin_slot = Some(slot);
         } else {
             return;
@@ -421,14 +467,22 @@ impl AppState {
 
         if let Some(occupant_id) = occupant_pane_id {
             if let Some(prev_slot) = moving_existing {
-                if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == occupant_id) {
+                if let Some(agent) = self
+                    .agent_sessions
+                    .iter_mut()
+                    .find(|a| a.pane_id == occupant_id)
+                {
                     agent.pin_slot = Some(prev_slot);
                 }
             } else {
                 // Clear the occupant's slot *before* calling pin_agent_auto so that the
                 // freed slot is counted as available when it scans for the lowest free.
                 // pin_agent_auto cannot pick `slot` (the moving agent already owns it).
-                if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == occupant_id) {
+                if let Some(agent) = self
+                    .agent_sessions
+                    .iter_mut()
+                    .find(|a| a.pane_id == occupant_id)
+                {
                     agent.pin_slot = None;
                 }
                 self.pin_agent_auto(&occupant_id);
@@ -438,14 +492,20 @@ impl AppState {
 
     /// Unpin the agent identified by pane_id. No-op if not pinned or not found.
     pub fn unpin_agent(&mut self, pane_id: &str) {
-        if let Some(agent) = self.agent_sessions.iter_mut().find(|a| a.pane_id == pane_id) {
+        if let Some(agent) = self
+            .agent_sessions
+            .iter_mut()
+            .find(|a| a.pane_id == pane_id)
+        {
             agent.pin_slot = None;
         }
     }
 
     /// Return the agent occupying the given pin slot, if any.
     pub fn agent_by_pin_slot(&self, slot: u8) -> Option<&AgentSession> {
-        self.agent_sessions.iter().find(|a| a.pin_slot == Some(slot))
+        self.agent_sessions
+            .iter()
+            .find(|a| a.pin_slot == Some(slot))
     }
 
     /// Get all agents detected in a given tmux session.
@@ -467,32 +527,102 @@ impl AppState {
         }
     }
 
-    fn merge_pi_indicator(current: Option<PiIndicator>, next: Option<PiIndicator>) -> Option<PiIndicator> {
+    fn merge_pi_indicator(
+        current: Option<PiIndicator>,
+        next: Option<PiIndicator>,
+    ) -> Option<PiIndicator> {
         match (current, next) {
             (None, next) => next,
             (current, None) => current,
-            (Some(current), Some(next)) => Some(if Self::pi_indicator_priority(next) > Self::pi_indicator_priority(current) {
-                next
-            } else {
-                current
-            }),
+            (Some(current), Some(next)) => Some(
+                if Self::pi_indicator_priority(next) > Self::pi_indicator_priority(current) {
+                    next
+                } else {
+                    current
+                },
+            ),
         }
     }
 
-    fn latest_pi_status_for_pane(&self, pane_id: &str) -> Option<&PiStatus> {
-        self.pi_statuses
-            .iter()
-            .filter(|s| s.pane_id == pane_id)
-            .max_by_key(|s| s.updated_at_ms)
+    /// Reduce sidecars once to the latest status per pane. Rendering and flat
+    /// agent construction should reuse this map instead of repeatedly scanning
+    /// the full status vector for every session/agent.
+    fn latest_pi_status_map(&self) -> std::collections::HashMap<&str, &PiStatus> {
+        let mut latest = std::collections::HashMap::new();
+        for status in &self.pi_statuses {
+            let replace = latest
+                .get(status.pane_id.as_str())
+                .is_none_or(|current: &&PiStatus| status.updated_at_ms > current.updated_at_ms);
+            if replace {
+                latest.insert(status.pane_id.as_str(), status);
+            }
+        }
+        latest
     }
 
-    fn latest_pi_statuses_for_session(&self, tmux_session_name: &str) -> Vec<&PiStatus> {
-        self.pi_statuses
+    fn indicator_for_status(
+        &self,
+        status: &PiStatus,
+        live_pi_panes: &std::collections::HashSet<&str>,
+    ) -> Option<PiIndicator> {
+        match status.work_state {
+            PiWorkState::Working | PiWorkState::Retrying => {
+                Some(if live_pi_panes.contains(status.pane_id.as_str()) {
+                    if status.work_state == PiWorkState::Working {
+                        PiIndicator::Working
+                    } else {
+                        PiIndicator::Retrying
+                    }
+                } else {
+                    PiIndicator::Failed
+                })
+            }
+            PiWorkState::Failed => Some(PiIndicator::Failed),
+            PiWorkState::Incomplete => Some(PiIndicator::Incomplete),
+            PiWorkState::Cancelled => Some(PiIndicator::Cancelled),
+            PiWorkState::Done => Some(PiIndicator::Done),
+            _ => None,
+        }
+    }
+
+    /// Aggregate session indicators in O(statuses + agents), keyed by session.
+    pub fn pi_indicators_by_session(&self) -> std::collections::HashMap<String, PiIndicator> {
+        let latest = self.latest_pi_status_map();
+        let live_pi_panes: std::collections::HashSet<&str> = self
+            .agent_sessions
             .iter()
-            .filter(|status| status.tmux_session_name == tmux_session_name)
-            .filter(|status| {
-                self.latest_pi_status_for_pane(&status.pane_id)
-                    .is_some_and(|latest| std::ptr::eq(*status, latest))
+            .filter(|agent| agent.agent_type == AgentType::Pi)
+            .map(|agent| agent.pane_id.as_str())
+            .collect();
+        let mut result = std::collections::HashMap::new();
+        for status in latest.values() {
+            let next = self.indicator_for_status(status, &live_pi_panes);
+            let current = result.get(status.tmux_session_name.as_str()).copied();
+            if let Some(indicator) = Self::merge_pi_indicator(current, next) {
+                result.insert(status.tmux_session_name.clone(), indicator);
+            }
+        }
+        result
+    }
+
+    /// Latest Pi indicator per pane, computed in one pass. This map is used
+    /// only for rows representing a known live Pi agent, so active sidecar
+    /// states remain Working/Retrying. The stale-active → Failed conversion is
+    /// intentionally session-only, where no live process may exist.
+    pub fn pi_indicators_by_pane(&self) -> std::collections::HashMap<String, PiIndicator> {
+        self.latest_pi_status_map()
+            .into_iter()
+            .filter_map(|(pane_id, status)| {
+                let indicator = match status.work_state {
+                    PiWorkState::Working => Some(PiIndicator::Working),
+                    PiWorkState::Retrying => Some(PiIndicator::Retrying),
+                    PiWorkState::Failed => Some(PiIndicator::Failed),
+                    PiWorkState::Incomplete => Some(PiIndicator::Incomplete),
+                    PiWorkState::Cancelled => Some(PiIndicator::Cancelled),
+                    PiWorkState::Done => Some(PiIndicator::Done),
+                    _ => None,
+                }?;
+                Some((pane_id.to_string(), indicator))
             })
             .collect()
     }
@@ -504,30 +634,21 @@ impl AppState {
     /// A `working`/`retrying` sidecar without a live Pi process is treated as
     /// `Failed`, covering crashes and forced termination.
     pub fn pi_indicator_for_session(&self, tmux_session_name: &str) -> Option<PiIndicator> {
-        let mut result = None;
-        for status in self.latest_pi_statuses_for_session(tmux_session_name) {
-            let next = match status.work_state {
-                PiWorkState::Working | PiWorkState::Retrying => {
-                    let live = self.agent_sessions.iter().any(|a| {
-                        a.agent_type == AgentType::Pi && a.pane_id == status.pane_id
-                    });
-                    Some(if live {
-                        match status.work_state {
-                            PiWorkState::Working => PiIndicator::Working,
-                            PiWorkState::Retrying => PiIndicator::Retrying,
-                            _ => unreachable!(),
-                        }
-                    } else {
-                        PiIndicator::Failed
-                    })
-                }
-                PiWorkState::Failed => Some(PiIndicator::Failed),
-                PiWorkState::Incomplete => Some(PiIndicator::Incomplete),
-                PiWorkState::Cancelled => Some(PiIndicator::Cancelled),
-                PiWorkState::Done => Some(PiIndicator::Done),
-                _ => None,
-            };
-            result = Self::merge_pi_indicator(result, next);
+        self.pi_indicators_by_session()
+            .get(tmux_session_name)
+            .copied()
+    }
+
+    /// Aggregate thread indicators once from a precomputed session map.
+    pub fn pi_indicators_by_thread(&self) -> std::collections::HashMap<Uuid, PiIndicator> {
+        let sessions = self.pi_indicators_by_session();
+        let mut result = std::collections::HashMap::new();
+        for session in &self.active_sessions {
+            let next = sessions.get(&session.tmux_session_name).copied();
+            let current = result.get(&session.thread_id).copied();
+            if let Some(indicator) = Self::merge_pi_indicator(current, next) {
+                result.insert(session.thread_id, indicator);
+            }
         }
         result
     }
@@ -535,24 +656,20 @@ impl AppState {
     /// What indicator (if any) a thread row should show for Pi activity in any
     /// of its active sessions, using the same priority as session rows.
     pub fn pi_indicator_for_thread(&self, thread_id: Uuid) -> Option<PiIndicator> {
-        self.active_sessions
-            .iter()
-            .filter(|s| s.thread_id == thread_id)
-            .fold(None, |acc, session| {
-                Self::merge_pi_indicator(acc, self.pi_indicator_for_session(&session.tmux_session_name))
-            })
+        self.pi_indicators_by_thread().get(&thread_id).copied()
     }
 
     /// What indicator (if any) a collection row should show for Pi activity in
     /// any visible thread, using the same priority as session rows.
     pub fn pi_indicator_for_collection(&self, col_idx: usize) -> Option<PiIndicator> {
         let col = self.collections.get(col_idx)?;
+        let by_thread = self.pi_indicators_by_thread();
         col.threads
             .iter()
             .enumerate()
             .filter(|(thread_idx, _)| !self.thread_is_hidden(col_idx, *thread_idx))
             .fold(None, |acc, (_, thread)| {
-                Self::merge_pi_indicator(acc, self.pi_indicator_for_thread(thread.id))
+                Self::merge_pi_indicator(acc, by_thread.get(&thread.id).copied())
             })
     }
 
@@ -561,20 +678,17 @@ impl AppState {
         if agent.agent_type != AgentType::Pi {
             return None;
         }
-        let status = self.latest_pi_status_for_pane(&agent.pane_id)?;
-        match status.work_state {
-            PiWorkState::Working => Some(PiIndicator::Working),
-            PiWorkState::Retrying => Some(PiIndicator::Retrying),
-            PiWorkState::Failed => Some(PiIndicator::Failed),
-            PiWorkState::Incomplete => Some(PiIndicator::Incomplete),
-            PiWorkState::Cancelled => Some(PiIndicator::Cancelled),
-            PiWorkState::Done => Some(PiIndicator::Done),
-            _ => None,
-        }
+        self.pi_indicators_by_pane().get(&agent.pane_id).copied()
     }
 
     /// Resolve a tree selection to the specific agent it points at.
-    pub fn resolve_agent(&self, col_idx: usize, thread_idx: usize, sess_idx: usize, agent_idx: usize) -> Option<&AgentSession> {
+    pub fn resolve_agent(
+        &self,
+        col_idx: usize,
+        thread_idx: usize,
+        sess_idx: usize,
+        agent_idx: usize,
+    ) -> Option<&AgentSession> {
         let thread_id = self.collections.get(col_idx)?.threads.get(thread_idx)?.id;
         let sessions = self.sessions_for_thread(thread_id);
         let session = sessions.get(sess_idx)?;
@@ -602,7 +716,12 @@ impl AppState {
         self.worktree_sessions
             .iter()
             .filter(|w| w.thread_id == thread_id)
-            .filter(|w| !self.active_sessions.iter().any(|s| s.tmux_session_name == w.tmux_session_name))
+            .filter(|w| {
+                !self
+                    .active_sessions
+                    .iter()
+                    .any(|s| s.tmux_session_name == w.tmux_session_name)
+            })
             .collect()
     }
 
@@ -615,9 +734,13 @@ impl AppState {
     /// Check whether a thread has any active sessions.
     pub fn has_active_session(&self, col_idx: usize, thread_idx: usize) -> bool {
         if let Some(col) = self.collections.get(col_idx)
-            && let Some(thread) = col.threads.get(thread_idx) {
-                return self.active_sessions.iter().any(|s| s.thread_id == thread.id);
-            }
+            && let Some(thread) = col.threads.get(thread_idx)
+        {
+            return self
+                .active_sessions
+                .iter()
+                .any(|s| s.thread_id == thread.id);
+        }
         false
     }
 
@@ -645,14 +768,16 @@ impl AppState {
                     // Match "prefix_label" where label is any non-empty suffix
                     if let Some(rest) = session_name.strip_prefix(&prefix)
                         && let Some(label) = rest.strip_prefix('_')
-                            && !label.is_empty() && claimed.insert(session_name.as_str()) {
-                                self.active_sessions.push(Session {
-                                    tmux_session_name: session_name.clone(),
-                                    display_name: label.to_string(),
-                                    thread_id: thread.id,
-                                    last_attached: *last_attached,
-                                });
-                            }
+                        && !label.is_empty()
+                        && claimed.insert(session_name.as_str())
+                    {
+                        self.active_sessions.push(Session {
+                            tmux_session_name: session_name.clone(),
+                            display_name: label.to_string(),
+                            thread_id: thread.id,
+                            last_attached: *last_attached,
+                        });
+                    }
                 }
             }
         }
@@ -709,7 +834,11 @@ impl AppState {
         for (col_idx, col) in self.collections.iter().enumerate() {
             for (thread_idx, thread) in col.threads.iter().enumerate() {
                 if thread.id == thread_id && self.thread_is_visible(col_idx, thread_idx) {
-                    let col_name = if col.is_root { None } else { Some(col.name.clone()) };
+                    let col_name = if col.is_root {
+                        None
+                    } else {
+                        Some(col.name.clone())
+                    };
                     return Some((col_name, thread.name.clone()));
                 }
             }
@@ -734,14 +863,21 @@ impl AppState {
     /// Returns the tree widget selection path for a session by its tmux name.
     /// Path: `[collection_id, thread_id, session_name]` or `[thread_id, session_name]` for root threads.
     pub fn session_tree_path(&self, session_name: &str) -> Option<Vec<String>> {
-        let session = self.active_sessions.iter().find(|s| s.tmux_session_name == session_name)?;
+        let session = self
+            .active_sessions
+            .iter()
+            .find(|s| s.tmux_session_name == session_name)?;
         for (col_idx, col) in self.collections.iter().enumerate() {
             for (thread_idx, thread) in col.threads.iter().enumerate() {
                 if thread.id == session.thread_id && self.thread_is_visible(col_idx, thread_idx) {
                     return if col.is_root {
                         Some(vec![thread.id.to_string(), session_name.to_string()])
                     } else {
-                        Some(vec![col.id.to_string(), thread.id.to_string(), session_name.to_string()])
+                        Some(vec![
+                            col.id.to_string(),
+                            thread.id.to_string(),
+                            session_name.to_string(),
+                        ])
                     };
                 }
             }
@@ -787,7 +923,9 @@ impl AppState {
         {
             (col_idx, thread_idx)
         } else {
-            self.collections[col_idx].threads.push(Thread::new("general"));
+            self.collections[col_idx]
+                .threads
+                .push(Thread::new("general"));
             (col_idx, self.collections[col_idx].threads.len() - 1)
         }
     }
@@ -810,14 +948,38 @@ impl AppState {
     /// Each entry carries the display strings and the index tuple needed to produce `SelectedItem::Agent`.
     pub fn all_agents_flat(&self) -> Vec<FlatAgent> {
         let mut result = Vec::new();
+        let pane_indicators = self.pi_indicators_by_pane();
+        let mut sessions_by_thread: std::collections::HashMap<Uuid, Vec<&Session>> =
+            std::collections::HashMap::new();
+        for session in &self.active_sessions {
+            sessions_by_thread
+                .entry(session.thread_id)
+                .or_default()
+                .push(session);
+        }
+        let mut agents_by_session: std::collections::HashMap<&str, Vec<&AgentSession>> =
+            std::collections::HashMap::new();
+        for agent in &self.agent_sessions {
+            agents_by_session
+                .entry(agent.tmux_session_name.as_str())
+                .or_default()
+                .push(agent);
+        }
+
         for (col_idx, col) in self.collections.iter().enumerate() {
             for (thread_idx, thread) in col.threads.iter().enumerate() {
                 if self.thread_is_hidden(col_idx, thread_idx) {
                     continue;
                 }
-                let sessions = self.sessions_for_thread(thread.id);
+                let sessions = sessions_by_thread
+                    .get(&thread.id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 for (sess_idx, session) in sessions.iter().enumerate() {
-                    let agents = self.agents_for_session(&session.tmux_session_name);
+                    let agents = agents_by_session
+                        .get(session.tmux_session_name.as_str())
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
                     for (agent_idx, agent) in agents.iter().enumerate() {
                         result.push(FlatAgent {
                             col_idx,
@@ -832,7 +994,11 @@ impl AppState {
                             window_index: agent.window_index,
                             pane_id: agent.pane_id.clone(),
                             pin_slot: agent.pin_slot,
-                            pi_indicator: self.pi_indicator_for_agent(agent),
+                            pi_indicator: if agent.agent_type == AgentType::Pi {
+                                pane_indicators.get(&agent.pane_id).copied()
+                            } else {
+                                None
+                            },
                         });
                     }
                 }
@@ -1279,6 +1445,87 @@ mod tests {
         }
     }
 
+    fn claude_agent(session: &str, pane: &str) -> AgentSession {
+        AgentSession {
+            agent_type: AgentType::ClaudeCode,
+            tmux_session_name: session.to_string(),
+            window_index: 0,
+            pane_id: pane.to_string(),
+            display_name: "claude".to_string(),
+            renamed: false,
+            pin_slot: None,
+        }
+    }
+
+    #[test]
+    fn resolve_stale_session_selection_returns_none() {
+        // A 3-segment path whose session vanished must NOT fall back to the
+        // parent thread — actions would silently retarget.
+        let mut state = AppState::with_sample_data();
+        state.refresh_sessions(&[("tws_work_edge-device-pipeline_bugfix".to_string(), 0)]);
+
+        let col_id = state.collections[0].id.to_string();
+        let thread_id = state.collections[0].threads[0].id.to_string();
+        let stale = "tws_work_edge-device-pipeline_gone".to_string();
+        match state.resolve_selection(&[col_id, thread_id, stale]) {
+            SelectedItem::None => {}
+            _ => panic!("expected None for stale session path"),
+        }
+    }
+
+    #[test]
+    fn resolve_stale_agent_selection_returns_none() {
+        let mut state = AppState::with_sample_data();
+        state.refresh_sessions(&[("tws_work_edge-device-pipeline_bugfix".to_string(), 0)]);
+        state
+            .agent_sessions
+            .push(claude_agent("tws_work_edge-device-pipeline_bugfix", "%1"));
+
+        let col_id = state.collections[0].id.to_string();
+        let thread_id = state.collections[0].threads[0].id.to_string();
+        let sess = "tws_work_edge-device-pipeline_bugfix".to_string();
+
+        // Live pane resolves to the agent…
+        match state.resolve_selection(&[
+            col_id.clone(),
+            thread_id.clone(),
+            sess.clone(),
+            "%1".into(),
+        ]) {
+            SelectedItem::Agent(_, _, _, _) => {}
+            _ => panic!("expected Agent"),
+        }
+        // …a dead pane must resolve to None, never to the parent session.
+        match state.resolve_selection(&[col_id, thread_id, sess, "%99".into()]) {
+            SelectedItem::None => {}
+            _ => panic!("expected None for stale agent path"),
+        }
+    }
+
+    #[test]
+    fn resolve_root_agent_selection_and_stale_pane() {
+        let mut state = AppState::new();
+        state.ensure_general_thread();
+        state.refresh_sessions(&[("twsr_general_quick".to_string(), 100)]);
+        state
+            .agent_sessions
+            .push(claude_agent("twsr_general_quick", "%2"));
+
+        let thread_id = state.collections[0].threads[0].id.to_string();
+        let sess = "twsr_general_quick".to_string();
+
+        match state.resolve_selection(&[thread_id.clone(), sess.clone(), "%2".into()]) {
+            SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => {
+                assert_eq!((col_idx, thread_idx, sess_idx, agent_idx), (0, 0, 0, 0));
+            }
+            _ => panic!("expected Agent"),
+        }
+        match state.resolve_selection(&[thread_id, sess, "%77".into()]) {
+            SelectedItem::None => {}
+            _ => panic!("expected None for stale root agent path"),
+        }
+    }
+
     #[test]
     fn resolve_worktree_selection() {
         let mut state = AppState::with_sample_data();
@@ -1363,7 +1610,10 @@ mod tests {
             .iter()
             .map(|w| w.display_name.as_str())
             .collect();
-        assert_eq!(names, vec!["main", "master", "dev", "develop", "alpha", "zeta"]);
+        assert_eq!(
+            names,
+            vec!["main", "master", "dev", "develop", "alpha", "zeta"]
+        );
     }
 
     #[test]
@@ -1457,7 +1707,9 @@ mod tests {
         let mut state = AppState::with_sample_data();
         let live = vec![("tws_work_edge-device-pipeline_bugfix".to_string(), 0)];
         state.refresh_sessions(&live);
-        let path = state.session_display_path(&state.active_sessions[0]).unwrap();
+        let path = state
+            .session_display_path(&state.active_sessions[0])
+            .unwrap();
         assert_eq!(path, "Work/Edge Device Pipeline/bugfix");
     }
 
@@ -1467,7 +1719,11 @@ mod tests {
         let live = vec![("tws_work_edge-device-pipeline_bugfix".to_string(), 100)];
         state.refresh_sessions(&live);
         state.hide_thread(0, 0);
-        assert!(state.session_display_path(&state.active_sessions[0]).is_none());
+        assert!(
+            state
+                .session_display_path(&state.active_sessions[0])
+                .is_none()
+        );
         assert!(state.recent_sessions(5).is_empty());
     }
 
@@ -1477,7 +1733,9 @@ mod tests {
         state.ensure_general_thread();
         let live = vec![("twsr_general_quick".to_string(), 0)];
         state.refresh_sessions(&live);
-        let path = state.session_display_path(&state.active_sessions[0]).unwrap();
+        let path = state
+            .session_display_path(&state.active_sessions[0])
+            .unwrap();
         assert_eq!(path, "general/quick");
     }
 
@@ -1592,7 +1850,12 @@ mod tests {
         state.pin_agent_to("%4", 1);
 
         let by_id = |id: &str| {
-            state.agent_sessions.iter().find(|a| a.pane_id == id).unwrap().pin_slot
+            state
+                .agent_sessions
+                .iter()
+                .find(|a| a.pane_id == id)
+                .unwrap()
+                .pin_slot
         };
         assert_eq!(by_id("%4"), Some(1));
         assert_eq!(by_id("%2"), Some(2));
@@ -1663,9 +1926,9 @@ mod tests {
 
         let recent = state.recent_sessions(5);
         assert_eq!(recent.len(), 3);
-        assert_eq!(recent[0].display_name, "hotfix");       // ts 3000
-        assert_eq!(recent[1].display_name, "main");          // ts 2000
-        assert_eq!(recent[2].display_name, "bugfix");        // ts 1000
+        assert_eq!(recent[0].display_name, "hotfix"); // ts 3000
+        assert_eq!(recent[1].display_name, "main"); // ts 2000
+        assert_eq!(recent[2].display_name, "bugfix"); // ts 1000
 
         // Truncation works
         let recent2 = state.recent_sessions(2);
@@ -1772,7 +2035,9 @@ mod tests {
     #[test]
     fn pi_indicator_stale_working_becomes_failed_without_live_pi_agent() {
         let mut state = AppState::new();
-        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Working));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Working));
 
         // A vanished process with a leftover "working" sidecar means Pi stopped
         // before it could report a terminal state.
@@ -1791,7 +2056,9 @@ mod tests {
     #[test]
     fn pi_indicator_done_persists_without_live_agent() {
         let mut state = AppState::new();
-        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
         assert_eq!(
             state.pi_indicator_for_session("tws_x_y_a"),
             Some(PiIndicator::Done)
@@ -1808,7 +2075,9 @@ mod tests {
             (PiWorkState::Failed, PiIndicator::Failed),
         ] {
             let mut state = AppState::new();
-            state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", work_state));
+            state
+                .pi_statuses
+                .push(make_pi_status("%1", "tws_x_y_a", work_state));
             assert_eq!(state.pi_indicator_for_session("tws_x_y_a"), Some(expected));
         }
     }
@@ -1816,8 +2085,13 @@ mod tests {
     #[test]
     fn pi_indicator_retrying_requires_live_pi_agent() {
         let mut state = AppState::new();
-        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Retrying));
-        assert_eq!(state.pi_indicator_for_session("tws_x_y_a"), Some(PiIndicator::Failed));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Retrying));
+        assert_eq!(
+            state.pi_indicator_for_session("tws_x_y_a"),
+            Some(PiIndicator::Failed)
+        );
 
         state.agent_sessions.push(make_pi_agent("%1", "tws_x_y_a"));
         assert_eq!(
@@ -1829,9 +2103,15 @@ mod tests {
     #[test]
     fn pi_indicator_working_wins_over_failed_and_done() {
         let mut state = AppState::new();
-        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
-        state.pi_statuses.push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Failed));
-        state.pi_statuses.push(make_pi_status("%3", "tws_x_y_a", PiWorkState::Working));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
+        state
+            .pi_statuses
+            .push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Failed));
+        state
+            .pi_statuses
+            .push(make_pi_status("%3", "tws_x_y_a", PiWorkState::Working));
         state.agent_sessions.push(make_pi_agent("%3", "tws_x_y_a"));
         assert_eq!(
             state.pi_indicator_for_session("tws_x_y_a"),
@@ -1842,10 +2122,18 @@ mod tests {
     #[test]
     fn pi_indicator_priority_orders_outcomes() {
         let mut state = AppState::new();
-        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
-        state.pi_statuses.push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Cancelled));
-        state.pi_statuses.push(make_pi_status("%3", "tws_x_y_a", PiWorkState::Incomplete));
-        state.pi_statuses.push(make_pi_status("%4", "tws_x_y_a", PiWorkState::Failed));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Done));
+        state
+            .pi_statuses
+            .push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Cancelled));
+        state
+            .pi_statuses
+            .push(make_pi_status("%3", "tws_x_y_a", PiWorkState::Incomplete));
+        state
+            .pi_statuses
+            .push(make_pi_status("%4", "tws_x_y_a", PiWorkState::Failed));
         assert_eq!(
             state.pi_indicator_for_session("tws_x_y_a"),
             Some(PiIndicator::Failed)
@@ -1867,7 +2155,9 @@ mod tests {
             PiWorkState::Done,
             2000,
         ));
-        state.agent_sessions.push(make_pi_agent("%22", "tws_init_etb_lp-678"));
+        state
+            .agent_sessions
+            .push(make_pi_agent("%22", "tws_init_etb_lp-678"));
 
         assert_eq!(
             state.pi_indicator_for_session("tws_init_etb_lp-678"),
@@ -1885,13 +2175,25 @@ mod tests {
         let done_session = "tws_work_edge-device-pipeline_one".to_string();
         let working_session = "tws_work_edge-device-pipeline_two".to_string();
         state.refresh_sessions(&[(done_session.clone(), 0), (working_session.clone(), 0)]);
-        state.pi_statuses.push(make_pi_status("%1", &done_session, PiWorkState::Done));
-        state.pi_statuses.push(make_pi_status("%2", &working_session, PiWorkState::Working));
-        state.agent_sessions.push(make_pi_agent("%2", &working_session));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", &done_session, PiWorkState::Done));
+        state
+            .pi_statuses
+            .push(make_pi_status("%2", &working_session, PiWorkState::Working));
+        state
+            .agent_sessions
+            .push(make_pi_agent("%2", &working_session));
 
         let thread_id = state.collections[0].threads[0].id;
-        assert_eq!(state.pi_indicator_for_thread(thread_id), Some(PiIndicator::Working));
-        assert_eq!(state.pi_indicator_for_collection(0), Some(PiIndicator::Working));
+        assert_eq!(
+            state.pi_indicator_for_thread(thread_id),
+            Some(PiIndicator::Working)
+        );
+        assert_eq!(
+            state.pi_indicator_for_collection(0),
+            Some(PiIndicator::Working)
+        );
         assert_eq!(state.pi_indicator_for_collection(1), None);
     }
 
@@ -1900,11 +2202,19 @@ mod tests {
         let mut state = AppState::with_sample_data();
         let session_name = "tws_work_edge-device-pipeline_one".to_string();
         state.refresh_sessions(&[(session_name.clone(), 0)]);
-        state.pi_statuses.push(make_pi_status("%1", &session_name, PiWorkState::Done));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", &session_name, PiWorkState::Done));
 
         let thread_id = state.collections[0].threads[0].id;
-        assert_eq!(state.pi_indicator_for_thread(thread_id), Some(PiIndicator::Done));
-        assert_eq!(state.pi_indicator_for_collection(0), Some(PiIndicator::Done));
+        assert_eq!(
+            state.pi_indicator_for_thread(thread_id),
+            Some(PiIndicator::Done)
+        );
+        assert_eq!(
+            state.pi_indicator_for_collection(0),
+            Some(PiIndicator::Done)
+        );
     }
 
     #[test]
@@ -1913,19 +2223,33 @@ mod tests {
         let done_session = "tws_work_edge-device-pipeline_one".to_string();
         let failed_session = "tws_work_edge-device-pipeline_two".to_string();
         state.refresh_sessions(&[(done_session.clone(), 0), (failed_session.clone(), 0)]);
-        state.pi_statuses.push(make_pi_status("%1", &done_session, PiWorkState::Done));
-        state.pi_statuses.push(make_pi_status("%2", &failed_session, PiWorkState::Failed));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", &done_session, PiWorkState::Done));
+        state
+            .pi_statuses
+            .push(make_pi_status("%2", &failed_session, PiWorkState::Failed));
 
         let thread_id = state.collections[0].threads[0].id;
-        assert_eq!(state.pi_indicator_for_thread(thread_id), Some(PiIndicator::Failed));
-        assert_eq!(state.pi_indicator_for_collection(0), Some(PiIndicator::Failed));
+        assert_eq!(
+            state.pi_indicator_for_thread(thread_id),
+            Some(PiIndicator::Failed)
+        );
+        assert_eq!(
+            state.pi_indicator_for_collection(0),
+            Some(PiIndicator::Failed)
+        );
     }
 
     #[test]
     fn pi_indicator_idle_and_shutdown_show_nothing() {
         let mut state = AppState::new();
-        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Idle));
-        state.pi_statuses.push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Shutdown));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Idle));
+        state
+            .pi_statuses
+            .push(make_pi_status("%2", "tws_x_y_a", PiWorkState::Shutdown));
         state.agent_sessions.push(make_pi_agent("%1", "tws_x_y_a"));
         assert_eq!(state.pi_indicator_for_session("tws_x_y_a"), None);
     }
@@ -1933,13 +2257,18 @@ mod tests {
     #[test]
     fn pi_indicator_for_agent_ignores_non_pi_agents() {
         let mut state = AppState::new();
-        state.pi_statuses.push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Working));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", "tws_x_y_a", PiWorkState::Working));
         // Claude agent on the same pane id → no Pi indicator.
         let claude = make_agent("%1");
         assert_eq!(state.pi_indicator_for_agent(&claude), None);
 
         let pi = make_pi_agent("%1", "tws_x_y_a");
-        assert_eq!(state.pi_indicator_for_agent(&pi), Some(PiIndicator::Working));
+        assert_eq!(
+            state.pi_indicator_for_agent(&pi),
+            Some(PiIndicator::Working)
+        );
     }
 
     #[test]
@@ -1947,8 +2276,12 @@ mod tests {
         let mut state = AppState::with_sample_data();
         let session_name = "tws_work_edge-device-pipeline_one".to_string();
         state.refresh_sessions(&[(session_name.clone(), 0)]);
-        state.agent_sessions.push(make_pi_agent("%1", &session_name));
-        state.pi_statuses.push(make_pi_status("%1", &session_name, PiWorkState::Working));
+        state
+            .agent_sessions
+            .push(make_pi_agent("%1", &session_name));
+        state
+            .pi_statuses
+            .push(make_pi_status("%1", &session_name, PiWorkState::Working));
 
         let flat = state.all_agents_flat();
         assert_eq!(flat.len(), 1);
