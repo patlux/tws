@@ -29,17 +29,17 @@ impl App {
         let is_normal = matches!(self.mode, Mode::Normal);
         let recent_data: Vec<(String, String)> =
             if is_normal && matches!(self.view_mode, ViewMode::Tree) {
-            self.state
-                .recent_sessions(5)
-                .iter()
-                .filter_map(|s| {
-                    let path = self.state.session_display_path(s)?;
-                    Some((s.tmux_session_name.clone(), path))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                self.state
+                    .recent_sessions(5)
+                    .iter()
+                    .filter_map(|s| {
+                        let path = self.state.session_display_path(s)?;
+                        Some((s.tmux_session_name.clone(), path))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let recent_count = recent_data.len() as u16;
         let show_recent = !recent_data.is_empty();
         let hidden_count = self.state.hidden_count();
@@ -59,21 +59,61 @@ impl App {
             "Press Enter for a quick session, or a to add a thread.".to_string()
         };
 
-        // Pre-compute flat agents list for agents view mode.
-        let flat_agents: Vec<FlatAgent> =
-            if matches!(self.view_mode, ViewMode::Agents | ViewMode::AgentGrid) {
-            self.state.all_agents_flat()
-        } else {
-            Vec::new()
-        };
+        // Rebuild the owned tree model before the terminal draw closure so the
+        // closure only borrows cached data plus mutable TreeState.
+        let deleting_labels = self.worktree_delete_progress_labels();
+        if matches!(self.view_mode, ViewMode::Tree)
+            && (self.tree_cache_dirty || self.tree_items_cache.is_none())
+        {
+            // Deletion labels are intentionally not baked into the cached
+            // tree text; the animated progress icon is overlaid each frame.
+            let deleting_label = |_session_name: &str| None;
+            self.tree_items_cache = Some(tree_view::build_tree_items(
+                &self.state,
+                &self.tree_state,
+                &self.theme,
+                &deleting_label,
+            ));
+            self.tree_cache_dirty = false;
+        }
 
-        // Pre-compute agent preview data.
+        // Pre-compute flat agents only when agent/topology/visibility state
+        // changed. Transient overlay redraws reuse the owned render model.
+        if matches!(self.view_mode, ViewMode::Agents | ViewMode::AgentGrid)
+            && self.flat_agents_cache_dirty
+        {
+            self.flat_agents_cache = self.state.all_agents_flat();
+            self.flat_agents_cache_dirty = false;
+        }
+        // Pre-compute agent preview data before taking immutable cache borrows.
         let selected_item = match self.view_mode {
             ViewMode::Tree => self.state.resolve_selection(self.tree_state.selected()),
-            ViewMode::Agents | ViewMode::AgentGrid => flat_agents
+            ViewMode::Agents | ViewMode::AgentGrid => self
+                .flat_agents_cache
                 .get(self.agent_list_cursor)
                 .map(|a| SelectedItem::Agent(a.col_idx, a.thread_idx, a.sess_idx, a.agent_idx))
                 .unwrap_or(SelectedItem::None),
+        };
+        let status_ctx = match &self.mode {
+            Mode::Normal
+                if matches!(self.view_mode, ViewMode::Agents | ViewMode::AgentGrid)
+                    && self.pin_assign_pending.is_some() =>
+            {
+                let pending = self.pin_assign_pending.as_deref().unwrap_or_default();
+                let target_path = self
+                    .flat_agents_cache
+                    .iter()
+                    .find(|agent| agent.pane_id == pending)
+                    .map(|agent| {
+                        format!(
+                            "{} / {} / {}",
+                            agent.thread_name, agent.session_display_name, agent.agent_display_name
+                        )
+                    })
+                    .unwrap_or_else(|| "agent".to_string());
+                StatusContext::AgentsViewSlotAssign { target_path }
+            }
+            _ => self.status_context(&selected_item),
         };
         let show_preview =
             self.preview_content.is_some() && matches!(selected_item, SelectedItem::Agent(..));
@@ -81,14 +121,20 @@ impl App {
             SelectedItem::Agent(col_idx, thread_idx, sess_idx, agent_idx) => self
                 .state
                 .resolve_agent(*col_idx, *thread_idx, *sess_idx, *agent_idx)
-                    .map(|a| format!("{} {}", a.agent_type.icon(), a.display_name))
+                .map(|a| format!("{} {}", a.agent_type.icon(), a.display_name))
                 .unwrap_or_default(),
             _ => String::new(),
         };
         let show_sidebar =
             show_preview && is_normal && !matches!(self.view_mode, ViewMode::AgentGrid);
+        // Move owned caches out temporarily: the draw closure mutates
+        // TreeState and also calls other App methods, which cannot coexist
+        // with immutable borrows into `self` under Rust's aliasing rules.
+        let flat_agents_cache = std::mem::take(&mut self.flat_agents_cache);
+        let tree_items_cache = self.tree_items_cache.take();
+        let deleting_icon = self.worktree_spinner_frame();
 
-        terminal.draw(|frame| {
+        let draw_result = terminal.draw(|frame| {
             let area = frame.area();
 
             // Paint the theme background before any widgets
@@ -124,7 +170,7 @@ impl App {
             let (tree_area, sidebar_area) = if show_sidebar {
                 let horiz =
                     Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
-                .split(content_area);
+                        .split(content_area);
                 (horiz[0], Some(horiz[1]))
             } else {
                 (content_area, None)
@@ -134,7 +180,7 @@ impl App {
             if matches!(self.view_mode, ViewMode::AgentGrid) {
                 agent_grid::render(
                     frame,
-                    &flat_agents,
+                    &flat_agents_cache,
                     &self.grid_captures,
                     self.agent_list_cursor,
                     tree_area,
@@ -143,25 +189,18 @@ impl App {
             } else if matches!(self.view_mode, ViewMode::Agents) {
                 agents_view::render(
                     frame,
-                    &flat_agents,
+                    &flat_agents_cache,
                     self.agent_list_cursor,
                     tree_area,
                     &self.theme,
                 );
             } else {
                 let block = Block::default();
-                let deleting_labels = self.worktree_delete_progress_labels();
                 let deleting_label =
                     |session_name: &str| deleting_labels.get(session_name).cloned();
-                let deleting_icon = self.worktree_spinner_frame();
                 let marked_sessions = &self.marked_sessions;
                 let is_marked = |session_name: &str| marked_sessions.contains(session_name);
-                let items = tree_view::build_tree_items(
-                    &self.state,
-                    &self.tree_state,
-                    &self.theme,
-                    &deleting_label,
-                );
+                let items = tree_items_cache.as_deref().unwrap_or(&[]);
                 if items.is_empty() {
                     let available_height = tree_area.height.saturating_sub(2);
                     let content_height = 4u16;
@@ -186,7 +225,7 @@ impl App {
                 } else {
                     let tree_highlight = self.theme.highlight;
 
-                    let Ok(tree) = Tree::new(&items) else {
+                    let Ok(tree) = Tree::new(items) else {
                         // Duplicate identifiers (should never happen) — skip the
                         // tree this frame instead of panicking mid-render.
                         return;
@@ -204,7 +243,7 @@ impl App {
                         frame,
                         &self.state,
                         &self.tree_state,
-                        &items,
+                        items,
                         tree_area,
                         &self.theme,
                         tree_highlight,
@@ -262,7 +301,6 @@ impl App {
 
             // Status bar
             let active_count = self.state.active_sessions.len();
-            let status_ctx = self.status_context(&selected_item);
             status_bar::render(
                 frame,
                 status_ctx,
@@ -312,7 +350,7 @@ impl App {
                                 .map(|col| {
                                     col.threads
                                         .iter()
-                                    .map(|t| self.state.sessions_for_thread(t.id).len())
+                                        .map(|t| self.state.sessions_for_thread(t.id).len())
                                         .sum()
                                 })
                                 .unwrap_or(0);
@@ -405,7 +443,10 @@ impl App {
             if let Some((message, is_error)) = &notification_msg {
                 render_notification(frame, area, message, *is_error, &self.theme);
             }
-        })?;
+        });
+        self.flat_agents_cache = flat_agents_cache;
+        self.tree_items_cache = tree_items_cache;
+        draw_result?;
         Ok(())
     }
 
@@ -420,21 +461,6 @@ impl App {
             Mode::ThreadPicker { .. } => StatusContext::ThreadPicker,
             Mode::Normal => {
                 if matches!(self.view_mode, ViewMode::Agents | ViewMode::AgentGrid) {
-                    if let Some(pending) = &self.pin_assign_pending {
-                        let target_path = self
-                            .state
-                            .all_agents_flat()
-                            .into_iter()
-                            .find(|a| &a.pane_id == pending)
-                            .map(|a| {
-                                format!(
-                                    "{} / {} / {}",
-                                    a.thread_name, a.session_display_name, a.agent_display_name
-                                )
-                            })
-                            .unwrap_or_else(|| "agent".to_string());
-                        return StatusContext::AgentsViewSlotAssign { target_path };
-                    }
                     return if matches!(self.view_mode, ViewMode::AgentGrid) {
                         StatusContext::AgentGrid
                     } else {

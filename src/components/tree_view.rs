@@ -1,25 +1,139 @@
+use std::collections::{HashMap, HashSet};
+
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use tui_tree_widget::{TreeItem, TreeState};
 
-use crate::core::model::Thread;
+use crate::core::model::{AgentSession, Session, Thread, WorktreeSession};
 use crate::core::pi_status::{PiIndicator, WORKING_INDICATOR};
 use crate::core::state::{AppState, SelectedItem};
 use crate::theme::Theme;
 
+/// Per-build indexes turn per-thread/per-session global scans into keyed
+/// lookups. The resulting tree is fully owned (`'static`) so App can cache it
+/// across redraws caused only by overlays/animation.
+struct RenderIndex<'a> {
+    sessions_by_thread: HashMap<uuid::Uuid, Vec<&'a Session>>,
+    agents_by_session: HashMap<&'a str, Vec<&'a AgentSession>>,
+    worktrees_by_thread: HashMap<uuid::Uuid, Vec<&'a WorktreeSession>>,
+    session_indicators: HashMap<String, PiIndicator>,
+    pane_indicators: HashMap<String, PiIndicator>,
+    thread_indicators: HashMap<uuid::Uuid, PiIndicator>,
+}
+
+fn indicator_priority(indicator: PiIndicator) -> u8 {
+    match indicator {
+        PiIndicator::Working => 5,
+        PiIndicator::Retrying => 4,
+        PiIndicator::Failed => 3,
+        PiIndicator::Incomplete => 2,
+        PiIndicator::Cancelled => 1,
+        PiIndicator::Done => 0,
+    }
+}
+
+fn merge_indicator(current: Option<PiIndicator>, next: Option<PiIndicator>) -> Option<PiIndicator> {
+    match (current, next) {
+        (None, next) => next,
+        (current, None) => current,
+        (Some(current), Some(next)) => {
+            Some(if indicator_priority(next) > indicator_priority(current) {
+                next
+            } else {
+                current
+            })
+        }
+    }
+}
+
+impl<'a> RenderIndex<'a> {
+    fn new(state: &'a AppState) -> Self {
+        let mut sessions_by_thread: HashMap<uuid::Uuid, Vec<&Session>> = HashMap::new();
+        let active_names: HashSet<&str> = state
+            .active_sessions
+            .iter()
+            .map(|session| session.tmux_session_name.as_str())
+            .collect();
+        for session in &state.active_sessions {
+            sessions_by_thread
+                .entry(session.thread_id)
+                .or_default()
+                .push(session);
+        }
+
+        let mut agents_by_session: HashMap<&str, Vec<&AgentSession>> = HashMap::new();
+        for agent in &state.agent_sessions {
+            let session_agents = agents_by_session
+                .entry(agent.tmux_session_name.as_str())
+                .or_default();
+            if !session_agents
+                .iter()
+                .any(|existing| existing.pane_id == agent.pane_id)
+            {
+                session_agents.push(agent);
+            }
+        }
+
+        let mut worktrees_by_thread: HashMap<uuid::Uuid, Vec<&WorktreeSession>> = HashMap::new();
+        if !state.active_filter {
+            for worktree in &state.worktree_sessions {
+                if !active_names.contains(worktree.tmux_session_name.as_str()) {
+                    worktrees_by_thread
+                        .entry(worktree.thread_id)
+                        .or_default()
+                        .push(worktree);
+                }
+            }
+        }
+
+        let session_indicators = state.pi_indicators_by_session();
+        let pane_indicators = state.pi_indicators_by_pane();
+        let mut thread_indicators = HashMap::new();
+        for session in &state.active_sessions {
+            let next = session_indicators.get(&session.tmux_session_name).copied();
+            let current = thread_indicators.get(&session.thread_id).copied();
+            if let Some(indicator) = merge_indicator(current, next) {
+                thread_indicators.insert(session.thread_id, indicator);
+            }
+        }
+
+        Self {
+            sessions_by_thread,
+            agents_by_session,
+            worktrees_by_thread,
+            session_indicators,
+            pane_indicators,
+            thread_indicators,
+        }
+    }
+
+    fn collection_indicator(&self, state: &AppState, col_idx: usize) -> Option<PiIndicator> {
+        let collection = state.collections.get(col_idx)?;
+        collection
+            .threads
+            .iter()
+            .enumerate()
+            .filter(|(thread_idx, _)| !state.thread_is_hidden(col_idx, *thread_idx))
+            .fold(None, |current, (_, thread)| {
+                merge_indicator(current, self.thread_indicators.get(&thread.id).copied())
+            })
+    }
+}
+
 /// Converts the app state into TreeItems for rendering.
 /// Collections -> Threads -> Sessions (3-level hierarchy).
 /// Root threads (from the root collection) render at root level, not nested under a collection node.
-pub fn build_tree_items<'a>(
-    state: &'a AppState,
+pub fn build_tree_items(
+    state: &AppState,
     tree_state: &TreeState<String>,
     theme: &Theme,
     deleting_label: &dyn Fn(&str) -> Option<String>,
-) -> Vec<TreeItem<'a, String>> {
-    let mut items: Vec<TreeItem<'a, String>> = Vec::new();
+) -> Vec<TreeItem<'static, String>> {
+    let index = RenderIndex::new(state);
+    let mut items: Vec<TreeItem<'static, String>> = Vec::new();
 
     // Regular collections first
     for (col_idx, col) in state.collections.iter().enumerate() {
@@ -27,7 +141,7 @@ pub fn build_tree_items<'a>(
             continue;
         }
         let collection_path = vec![col.id.to_string()];
-        let children: Vec<TreeItem<'a, String>> = col
+        let children: Vec<TreeItem<'static, String>> = col
             .threads
             .iter()
             .enumerate()
@@ -36,7 +150,7 @@ pub fn build_tree_items<'a>(
                 let mut thread_path = collection_path.clone();
                 thread_path.push(thread.id.to_string());
                 build_thread_item(
-                    state,
+                    &index,
                     tree_state,
                     thread,
                     &thread_path,
@@ -50,6 +164,7 @@ pub fn build_tree_items<'a>(
             TreeItem::new(
                 col.id.to_string(),
                 collection_text(
+                    &index,
                     state,
                     col_idx,
                     col.name.as_str(),
@@ -71,7 +186,7 @@ pub fn build_tree_items<'a>(
             if !state.thread_is_hidden(col_idx, thread_idx) {
                 let thread_path = vec![thread.id.to_string()];
                 items.push(build_thread_item(
-                    state,
+                    &index,
                     tree_state,
                     thread,
                     &thread_path,
@@ -146,7 +261,11 @@ pub fn render_worktree_icons(
                 } else {
                     unselected_style
                 };
-                let highlight_width = if tree_state.selected().is_empty() { 0 } else { 2 };
+                let highlight_width = if tree_state.selected().is_empty() {
+                    0
+                } else {
+                    2
+                };
                 let x_offset = highlight_width + (flattened.depth() as u16 * 2);
                 if x_offset < area.width {
                     let icon_area = Rect {
@@ -172,10 +291,7 @@ pub fn render_worktree_icons(
 
 /// Build a TreeItem for a single thread (shared between regular and root threads).
 /// Spans appended to a collection/thread/session row for Pi activity.
-fn pi_indicator_suffix(
-    indicator: Option<PiIndicator>,
-    theme: &Theme,
-) -> Vec<Span<'static>> {
+fn pi_indicator_suffix(indicator: Option<PiIndicator>, theme: &Theme) -> Vec<Span<'static>> {
     match indicator {
         Some(PiIndicator::Working) => vec![
             Span::raw("  "),
@@ -210,6 +326,7 @@ fn should_show_parent_indicator(tree_state: &TreeState<String>, path: &[String])
 }
 
 fn collection_text(
+    index: &RenderIndex<'_>,
     state: &AppState,
     col_idx: usize,
     name: &str,
@@ -219,37 +336,46 @@ fn collection_text(
     let mut spans = vec![Span::styled(name.to_string(), theme.collection)];
     if !is_expanded {
         spans.extend(pi_indicator_suffix(
-            state.pi_indicator_for_collection(col_idx),
+            index.collection_indicator(state, col_idx),
             theme,
         ));
     }
     Text::from(Line::from(spans))
 }
 
-fn build_thread_item<'a>(
-    state: &'a AppState,
+fn build_thread_item(
+    index: &RenderIndex<'_>,
     tree_state: &TreeState<String>,
-    thread: &'a Thread,
+    thread: &Thread,
     thread_path: &[String],
     theme: &Theme,
     deleting_label: &dyn Fn(&str) -> Option<String>,
-) -> TreeItem<'a, String> {
-    let mut session_children: Vec<TreeItem<'a, String>> = state
-        .active_sessions
-        .iter()
-        .filter(|s| s.thread_id == thread.id)
+) -> TreeItem<'static, String> {
+    let mut session_children: Vec<TreeItem<'static, String>> = index
+        .sessions_by_thread
+        .get(&thread.id)
+        .into_iter()
+        .flatten()
         .map(|s| {
-            let agents = state.agents_for_session(&s.tmux_session_name);
+            let agents = index
+                .agents_by_session
+                .get(s.tmux_session_name.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let deleting = deleting_label(&s.tmux_session_name);
             let is_deleting = deleting.is_some();
             let display_name = deleting.unwrap_or_else(|| s.display_name.clone());
-            let style = if is_deleting { theme.worktree_meta } else { theme.session };
+            let style = if is_deleting {
+                theme.worktree_meta
+            } else {
+                theme.session
+            };
             let mut spans = vec![Span::styled(display_name, style)];
             let mut session_path = thread_path.to_vec();
             session_path.push(s.tmux_session_name.clone());
             if !is_deleting && should_show_parent_indicator(tree_state, &session_path) {
                 spans.extend(pi_indicator_suffix(
-                    state.pi_indicator_for_session(&s.tmux_session_name),
+                    index.session_indicators.get(&s.tmux_session_name).copied(),
                     theme,
                 ));
             }
@@ -257,13 +383,19 @@ fn build_thread_item<'a>(
             if agents.is_empty() {
                 TreeItem::new_leaf(s.tmux_session_name.clone(), session_label)
             } else {
-                let agent_children: Vec<TreeItem<'a, String>> = agents
+                let agent_children: Vec<TreeItem<'static, String>> = agents
                     .iter()
                     .map(|a| {
                         let mut spans = vec![Span::styled("╰─ ", theme.agent_connector)];
-                        match state.pi_indicator_for_agent(a) {
+                        let indicator = (a.agent_type == crate::core::model::AgentType::Pi)
+                            .then(|| index.pane_indicators.get(&a.pane_id).copied())
+                            .flatten();
+                        match indicator {
                             Some(PiIndicator::Working) => {
-                                spans.push(Span::styled(format!("{} ", WORKING_INDICATOR), theme.pi_working));
+                                spans.push(Span::styled(
+                                    format!("{} ", WORKING_INDICATOR),
+                                    theme.pi_working,
+                                ));
                             }
                             Some(PiIndicator::Retrying) => {
                                 spans.push(Span::styled("↻ ".to_string(), theme.pi_warning));
@@ -282,22 +414,26 @@ fn build_thread_item<'a>(
                             }
                             None => {}
                         }
-                        spans.push(Span::styled(a.agent_type.icon(), theme.agent.add_modifier(Modifier::BOLD)));
+                        spans.push(Span::styled(
+                            a.agent_type.icon(),
+                            theme.agent.add_modifier(Modifier::BOLD),
+                        ));
                         spans.push(Span::styled(format!(" {}", a.display_name), theme.agent));
                         TreeItem::new_leaf(a.pane_id.clone(), Line::from(spans))
                     })
                     .collect();
-                TreeItem::new(
-                    s.tmux_session_name.clone(),
-                    session_label,
-                    agent_children,
-                )
-                .expect("pane IDs are unique within a session")
+                TreeItem::new(s.tmux_session_name.clone(), session_label, agent_children)
+                    .expect("pane IDs are unique within a session")
             }
         })
         .collect();
 
-    for worktree in state.worktrees_for_thread(thread.id) {
+    for worktree in index
+        .worktrees_by_thread
+        .get(&thread.id)
+        .into_iter()
+        .flatten()
+    {
         let deleting = deleting_label(&worktree.tmux_session_name);
         let name_style = if deleting.is_some() {
             theme.worktree_meta
@@ -310,7 +446,10 @@ fn build_thread_item<'a>(
         let mut spans = vec![Span::styled(display_name.to_string(), name_style)];
         if let Some(branch) = &worktree.branch {
             spans.push(Span::styled("  ", theme.worktree_meta));
-            spans.push(Span::styled(branch_display_name(branch), theme.worktree_meta));
+            spans.push(Span::styled(
+                branch_display_name(branch),
+                theme.worktree_meta,
+            ));
         } else if let Some(head) = &worktree.head {
             spans.push(Span::styled("  ", theme.worktree_meta));
             spans.push(Span::styled(short_head(head), theme.worktree_meta));
@@ -330,20 +469,20 @@ fn build_thread_item<'a>(
 
     let thread_text = if session_count > 0 {
         let mut spans = vec![
-            Span::styled(thread.name.as_str(), theme.thread),
+            Span::styled(thread.name.clone(), theme.thread),
             Span::styled(" \u{25CF} ", theme.badge_dot),
             Span::styled(session_count.to_string(), theme.badge_count),
         ];
         if should_show_parent_indicator(tree_state, thread_path) {
             spans.extend(pi_indicator_suffix(
-                state.pi_indicator_for_thread(thread.id),
+                index.thread_indicators.get(&thread.id).copied(),
                 theme,
             ));
         }
         Text::from(Line::from(spans))
     } else {
         // No sessions means no Pi status to report on this thread row.
-        Text::styled(thread.name.as_str(), theme.thread_dim)
+        Text::styled(thread.name.clone(), theme.thread_dim)
     };
 
     if session_children.is_empty() {

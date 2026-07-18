@@ -1,9 +1,9 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
-use ratatui::Frame;
 
 use crate::theme::Theme;
 
@@ -31,8 +31,12 @@ pub fn render(frame: &mut Frame, state: &PreviewState<'_>, area: Rect, theme: &T
 
     match state.content {
         Some(text) => {
-            let paragraph = Paragraph::new(text.clone())
-                .scroll((state.scroll_offset as u16, 0));
+            // Ratatui 0.30 Paragraph does not accept `&Text`; clone only the
+            // visible line window instead of the complete captured buffer.
+            let visible_height = inner.height as usize;
+            let start = state.scroll_offset.min(text.lines.len());
+            let end = start.saturating_add(visible_height).min(text.lines.len());
+            let paragraph = Paragraph::new(Text::from(text.lines[start..end].to_vec()));
             frame.render_widget(paragraph, inner);
 
             let total_lines = text.lines.len();

@@ -133,8 +133,10 @@ fn render_tile(
     }
     match content {
         Some(text) => {
-            let scroll = text.lines.len().saturating_sub(inner.height as usize) as u16;
-            frame.render_widget(Paragraph::new(text.clone()).scroll((scroll, 0)), inner);
+            // Clone only the visible tail, not the complete captured pane.
+            let start = text.lines.len().saturating_sub(inner.height as usize);
+            let visible = Text::from(text.lines[start..].to_vec());
+            frame.render_widget(Paragraph::new(visible), inner);
         }
         None => {
             frame.render_widget(
