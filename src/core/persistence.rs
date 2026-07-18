@@ -32,16 +32,32 @@ fn ui_state_file() -> PathBuf {
     config_dir().join("ui-state.json")
 }
 
-pub fn load_ui() -> UiState {
-    let path = ui_state_file();
+/// Load UI state, returning a human-readable warning when an existing file
+/// could not be read or parsed (instead of silently resetting to defaults).
+pub fn load_ui() -> (UiState, Option<String>) {
+    load_ui_from(&ui_state_file())
+}
+
+fn load_ui_from(path: &Path) -> (UiState, Option<String>) {
     if !path.exists() {
-        return UiState::default();
+        return (UiState::default(), None);
     }
-    let data = match std::fs::read_to_string(&path) {
+    let data = match std::fs::read_to_string(path) {
         Ok(d) => d,
-        Err(_) => return UiState::default(),
+        Err(e) => {
+            return (
+                UiState::default(),
+                Some(format!("could not read {}: {}", path.display(), e)),
+            );
+        }
     };
-    serde_json::from_str(&data).unwrap_or_default()
+    match serde_json::from_str(&data) {
+        Ok(ui) => (ui, None),
+        Err(e) => (
+            UiState::default(),
+            Some(format!("could not parse {}: {}", path.display(), e)),
+        ),
+    }
 }
 
 pub fn save_ui(ui: &UiState) -> io::Result<()> {
@@ -51,12 +67,43 @@ pub fn save_ui(ui: &UiState) -> io::Result<()> {
     Ok(())
 }
 
-/// Write via temp file + rename so a crash mid-write never corrupts the target.
+/// Process-unique suffix for temp files so two tws instances (explicitly
+/// allowed past the lock warning) can never clobber each other's temp file.
+fn unique_tmp(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("{}.{}.tmp", std::process::id(), n))
+}
+
+/// Write via a per-process temp file + fsync + rename so a crash mid-write
+/// never corrupts the target, concurrent instances never share the temp
+/// file, and the data survives an OS crash/power loss (temp file and parent
+/// directory are both synced before/after the rename).
 fn write_atomic(path: &Path, data: &str) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, data)?;
-    fs::rename(&tmp, path)?;
-    Ok(())
+    use io::Write;
+    let tmp = unique_tmp(path);
+    let result = (|| -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(data.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)?;
+        // Make the rename itself durable.
+        #[cfg(unix)]
+        if let Some(dir) = path.parent() {
+            let dir_file = fs::File::open(dir)?;
+            dir_file.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Create the config dir if needed and keep it private (0700 on Unix) —
@@ -110,17 +157,17 @@ impl Drop for LockGuard {
 pub enum LockState {
     /// We hold the lock now.
     Acquired(LockGuard),
-    /// Another live tws process (PID) already holds it. State changes are
-    /// last-writer-wins across instances — caller should warn the user.
+    /// Another live tws process (PID) already holds it.
     HeldByOther(u32),
+    /// Locking itself failed (permissions/I/O). Never pretend acquisition:
+    /// doing so would silently re-enable concurrent writers.
+    Failed(io::Error),
 }
 
 pub fn acquire_instance_lock() -> LockState {
-    let Ok(dir) = ensure_config_dir() else {
-        // Can't lock without a config dir; saves will fail loudly later anyway.
-        return LockState::Acquired(LockGuard {
-            path: PathBuf::from("/nonexistent/tws.lock"),
-        });
+    let dir = match ensure_config_dir() {
+        Ok(dir) => dir,
+        Err(err) => return LockState::Failed(err),
     };
     let path = dir.join("tws.lock");
 
@@ -132,7 +179,10 @@ pub fn acquire_instance_lock() -> LockState {
         {
             Ok(mut f) => {
                 use io::Write;
-                let _ = write!(f, "{}", std::process::id());
+                if let Err(err) = write!(f, "{}", std::process::id()).and_then(|()| f.sync_all()) {
+                    let _ = fs::remove_file(&path);
+                    return LockState::Failed(err);
+                }
                 return LockState::Acquired(LockGuard { path });
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -145,14 +195,14 @@ pub fn acquire_instance_lock() -> LockState {
                     }
                     _ => {
                         // Stale lock (dead process or unreadable) — reclaim.
-                        let _ = fs::remove_file(&path);
+                        if let Err(err) = fs::remove_file(&path) {
+                            return LockState::Failed(err);
+                        }
                         continue;
                     }
                 }
             }
-            Err(_) => {
-                return LockState::Acquired(LockGuard { path });
-            }
+            Err(err) => return LockState::Failed(err),
         }
     }
 }
@@ -168,11 +218,14 @@ fn process_alive(pid: u32) -> bool {
 }
 
 pub fn load() -> io::Result<Vec<Collection>> {
-    let path = state_file();
+    load_from(&state_file())
+}
+
+fn load_from(path: &Path) -> io::Result<Vec<Collection>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let data = fs::read_to_string(&path)?;
+    let data = fs::read_to_string(path)?;
     match serde_json::from_str::<Vec<Collection>>(&data) {
         Ok(collections) => Ok(collections),
         Err(e) => {
@@ -190,13 +243,19 @@ pub fn load() -> io::Result<Vec<Collection>> {
 
 pub fn save(collections: &[Collection]) -> io::Result<()> {
     ensure_config_dir()?;
+    save_to(&state_file(), collections)
+}
+
+/// Save `collections` to `path`, first replacing the `.bak` recovery copy
+/// with the current file contents. A failed backup is propagated (not
+/// silently dropped) — saving without a working recovery path must be loud.
+fn save_to(path: &Path, collections: &[Collection]) -> io::Result<()> {
     let data = serde_json::to_string_pretty(collections)?;
-    let path = state_file();
-    // Keep the previous good state as a backup before replacing it.
     if path.exists() {
-        let _ = fs::copy(&path, path.with_extension("json.bak"));
+        let previous = fs::read_to_string(path)?;
+        write_atomic(&path.with_extension("json.bak"), &previous)?;
     }
-    write_atomic(&path, &data)?;
+    write_atomic(path, &data)?;
     Ok(())
 }
 
@@ -310,5 +369,87 @@ mod tests {
         let json = serde_json::to_string_pretty(&collections).unwrap();
         let loaded: Vec<Collection> = serde_json::from_str(&json).unwrap();
         assert!(loaded.is_empty());
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("tws_test_{}_{}", tag, uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn write_atomic_leaves_no_temp_files_and_valid_content() {
+        let dir = temp_dir("atomic");
+        let path = dir.join("state.json");
+        write_atomic(&path, "{}").unwrap();
+        write_atomic(&path, "{\"a\":1}").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"a\":1}");
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files must not linger");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_to_writes_backup_of_previous_state() {
+        let dir = temp_dir("backup");
+        let path = dir.join("state.json");
+        let mut col = Collection::new("First");
+        col.threads.push(Thread::new("T"));
+        save_to(&path, std::slice::from_ref(&col)).unwrap();
+
+        let mut col2 = Collection::new("Second");
+        col2.threads.push(Thread::new("T2"));
+        save_to(&path, std::slice::from_ref(&col2)).unwrap();
+
+        let bak = fs::read_to_string(path.with_extension("json.bak")).unwrap();
+        let backup: Vec<Collection> = serde_json::from_str(&bak).unwrap();
+        assert_eq!(backup[0].name, "First");
+        let current = load_from(&path).unwrap();
+        assert_eq!(current[0].name, "Second");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_to_propagates_backup_failure() {
+        let dir = temp_dir("backupfail");
+        let path = dir.join("state.json");
+        let mut col = Collection::new("First");
+        col.threads.push(Thread::new("T"));
+        save_to(&path, std::slice::from_ref(&col)).unwrap();
+        // Make the backup target unwritable: a directory occupies the .bak path.
+        fs::create_dir(dir.join("state.json.bak")).unwrap();
+        let mut col2 = Collection::new("Second");
+        col2.threads.push(Thread::new("T2"));
+        let result = save_to(&path, std::slice::from_ref(&col2));
+        assert!(
+            result.is_err(),
+            "backup failure must surface, not be ignored"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_ui_from_warns_on_unparseable_existing_file() {
+        let dir = temp_dir("uiwarn");
+        let path = dir.join("ui-state.json");
+        fs::write(&path, "not json").unwrap();
+        let (ui, warning) = load_ui_from(&path);
+        assert!(warning.is_some(), "corrupt UI state must produce a warning");
+        assert!(ui.open_nodes.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_ui_from_missing_file_is_silent_default() {
+        let dir = temp_dir("uimissing");
+        let path = dir.join("ui-state.json");
+        let (ui, warning) = load_ui_from(&path);
+        assert!(warning.is_none());
+        assert!(ui.selected.is_none());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

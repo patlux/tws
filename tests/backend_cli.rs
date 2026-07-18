@@ -314,6 +314,27 @@ fn hierarchy_mutation_respects_a_live_tws_lock() {
 }
 
 #[test]
+fn second_tui_instance_is_refused_without_an_unsafe_override() {
+    let dir = TestDir::new("tui-lock");
+    write_fake_tmux(&dir.0);
+    let config = dir.0.join("config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(config.join("tws.lock"), std::process::id().to_string()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tws"))
+        .env("PATH", test_path(&dir.0))
+        .env("TWS_CONFIG_DIR", &config)
+        .env("TWS_FAKE_TMUX_SESSIONS", dir.0.join("sessions"))
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("another TUI instance is running"));
+    assert!(!stderr.contains("continue anyway"));
+}
+
+#[test]
 fn spawn_creates_hierarchy_and_passes_command_as_literal_argv() {
     let dir = TestDir::new("spawn");
     write_fake_tmux(&dir.0);

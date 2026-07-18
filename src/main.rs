@@ -112,7 +112,10 @@ fn run_tui() -> std::io::Result<()> {
         }
         Err(e) => return Err(e),
     };
-    let ui_state = persistence::load_ui();
+    let (ui_state, ui_warning) = persistence::load_ui();
+    if let Some(warning) = ui_warning {
+        eprintln!("tws: {}", warning);
+    }
     let state = AppState {
         collections,
         backend: mux::backend(),
@@ -123,18 +126,19 @@ fn run_tui() -> std::io::Result<()> {
         active_filter: false,
     };
 
-    // Warn when another tws instance is live — state.json is last-writer-wins.
+    // The interactive TUI is a state writer. Refuse a second instance rather
+    // than offering an unsafe last-writer-wins override; automation commands
+    // have their own lock-aware mutation path.
     let _lock = match persistence::acquire_instance_lock() {
-        persistence::LockState::Acquired(guard) => Some(guard),
+        persistence::LockState::Acquired(guard) => guard,
         persistence::LockState::HeldByOther(pid) => {
-            eprintln!(
-                "tws: another instance is running (pid {}) — changes may overwrite each other",
-                pid
-            );
-            eprintln!("tws: press Enter to continue anyway, Ctrl+C to abort");
-            let mut line = String::new();
-            let _ = std::io::stdin().read_line(&mut line);
-            None
+            eprintln!("tws: another TUI instance is running (pid {})", pid);
+            eprintln!("tws: close that instance before starting another one");
+            std::process::exit(1);
+        }
+        persistence::LockState::Failed(error) => {
+            eprintln!("tws: could not acquire the state lock: {}", error);
+            std::process::exit(1);
         }
     };
 

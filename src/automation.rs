@@ -368,6 +368,9 @@ fn acquire_mutation_lock() -> Result<persistence::LockGuard, String> {
         persistence::LockState::HeldByOther(pid) => Err(format!(
             "state is locked by a running tws instance (pid {pid}); create the hierarchy in the TUI or close it and retry"
         )),
+        persistence::LockState::Failed(error) => {
+            Err(format!("could not acquire the state lock: {error}"))
+        }
     }
 }
 
