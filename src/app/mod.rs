@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph};
-use tui_tree_widget::{Tree, TreeState};
+use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::components::status_bar::{self, StatusContext};
 use crate::components::{
@@ -29,7 +29,10 @@ use tws_mux as mux;
 
 mod draw;
 mod input;
+mod mutation;
 mod refresh;
+
+use mutation::MutationJob;
 
 /// Single-line edit buffer with cursor navigation for the input modal.
 #[derive(Default)]
@@ -188,8 +191,10 @@ struct WorktreeCreateResult {
 
 /// Payload of a background session refresh: live tmux sessions plus the raw
 /// worktree discoveries per thread (name-building happens on the main thread).
+/// `live` is a `Result`: discovery failures must never be mistaken for an
+/// empty server and wipe the retained topology.
 struct SessionsPayload {
-    live: Vec<(String, i64)>,
+    live: Result<Vec<(String, i64)>, String>,
     discoveries: Vec<(
         uuid::Uuid,
         PathBuf,
@@ -216,7 +221,8 @@ struct RefreshResult {
     topology_generation: u64,
     /// `Some` for full refreshes, `None` for agent-only scans.
     sessions: Option<SessionsPayload>,
-    agents: Vec<crate::core::model::AgentSession>,
+    /// `Err` when the scan itself failed — the previous agent list is retained.
+    agents: Result<Vec<crate::core::model::AgentSession>, String>,
     pi_statuses: Vec<pi_status::PiStatus>,
     trigger_mtime: Option<SystemTime>,
 }
@@ -385,6 +391,27 @@ pub struct App {
     /// Last known terminal width, updated on resize events. Used to size
     /// the markdown render without a per-frame terminal size syscall.
     last_width: u16,
+    /// In-flight bulk backend mutation (rename/kill batches), with a label
+    /// for the status line. Runs off-thread; results arrive via mutation_rx.
+    pending_mutation: Option<String>,
+    mutation_tx: Sender<mutation::MutationOutcome>,
+    mutation_rx: Receiver<mutation::MutationOutcome>,
+    /// Worktree row to select once the next accepted refresh lands
+    /// (set after a worktree create completes).
+    pending_worktree_select: Option<(uuid::Uuid, PathBuf)>,
+    /// UI state (expansion/selection/pins/…) changed since the last save.
+    ui_dirty: bool,
+    /// Debounce for periodic UI-state saves (crash-safe persistence instead
+    /// of save-on-clean-exit only).
+    last_ui_save: Instant,
+    /// Throttle for background discovery error notifications.
+    last_discovery_error_notice: Option<Instant>,
+    /// Owned render models reused across redraws caused only by transient
+    /// overlays/animations. Dirty flags are set by input and accepted results.
+    tree_items_cache: Option<Vec<TreeItem<'static, String>>>,
+    tree_cache_dirty: bool,
+    flat_agents_cache: Vec<FlatAgent>,
+    flat_agents_cache_dirty: bool,
 }
 
 /// How often to poll the active multiplexer for session changes (seconds).
@@ -402,6 +429,10 @@ const GRID_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const TRIGGER_SCAN_DEBOUNCE: Duration = Duration::from_millis(500);
 
 const NOTIFICATION_DURATION: Duration = Duration::from_secs(4);
+/// Minimum spacing between background discovery error notifications.
+const DISCOVERY_ERROR_NOTICE_INTERVAL: Duration = Duration::from_secs(30);
+/// Debounce for periodic UI-state saves while the app is running.
+const UI_SAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 const DELETE_SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
 /// How long "done" markers survive after the Pi pane died before pruning.
 const PI_STATUS_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -413,8 +444,8 @@ fn expand_home(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/")
         && let Some(home) = dirs::home_dir()
     {
-            return home.join(rest);
-        }
+        return home.join(rest);
+    }
     PathBuf::from(path)
 }
 
@@ -485,6 +516,7 @@ impl App {
         let (refresh_tx, refresh_rx) = mpsc::channel();
         let (preview_tx, preview_rx) = mpsc::channel();
         let (grid_preview_tx, grid_preview_rx) = mpsc::channel();
+        let (mutation_tx, mutation_rx) = mpsc::channel();
         Self {
             state,
             tree_state: TreeState::default(),
@@ -538,7 +570,23 @@ impl App {
             animation_start: Instant::now(),
             needs_redraw: true,
             last_width: crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80),
+            pending_mutation: None,
+            mutation_tx,
+            mutation_rx,
+            pending_worktree_select: None,
+            ui_dirty: false,
+            last_ui_save: Instant::now(),
+            last_discovery_error_notice: None,
+            tree_items_cache: None,
+            tree_cache_dirty: true,
+            flat_agents_cache: Vec::new(),
+            flat_agents_cache_dirty: true,
         }
+    }
+
+    fn invalidate_render_models(&mut self) {
+        self.tree_cache_dirty = true;
+        self.flat_agents_cache_dirty = true;
     }
 
     fn set_flash(&mut self, msg: &str) {
@@ -553,6 +601,14 @@ impl App {
         });
     }
 
+    fn request_quit(&mut self) {
+        if self.pending_mutation.is_some() {
+            self.set_flash("Wait for the backend operation to finish before quitting");
+        } else {
+            self.running = false;
+        }
+    }
+
     fn set_error(&mut self, msg: impl Into<String>) {
         let message = msg.into();
         let message = if message.trim().is_empty() {
@@ -562,6 +618,20 @@ impl App {
         };
         self.flash = None;
         self.mode = Mode::Error { message };
+    }
+
+    /// Throttled error notification for background discovery failures —
+    /// at most one per interval so a broken tmux doesn't spam the UI.
+    fn notice_discovery_error(&mut self, message: impl Into<String>) {
+        let now = Instant::now();
+        if self
+            .last_discovery_error_notice
+            .is_some_and(|t| now.duration_since(t) < DISCOVERY_ERROR_NOTICE_INTERVAL)
+        {
+            return;
+        }
+        self.last_discovery_error_notice = Some(now);
+        self.set_notification(message, true);
     }
 
     fn worktree_spinner_frame(&self) -> &'static str {
@@ -601,16 +671,19 @@ impl App {
             match result.result {
                 Ok(()) => {
                     self.marked_sessions.remove(&result.tmux_session_name);
-                    self.do_refresh_sessions();
                     if let Some(pending) = pending
                         && !pending.parent_selection.is_empty()
                     {
-                            self.tree_state.select(pending.parent_selection);
-                        }
+                        self.tree_state.select(pending.parent_selection);
+                        self.ui_dirty = true;
+                    }
+                    self.request_refresh();
                     self.set_notification(format!("Deleted worktree {}", result.name), false);
                 }
                 Err(err) => {
-                    self.do_refresh_sessions();
+                    // The worker may have killed the linked session before a
+                    // later Git removal failed; reconcile asynchronously.
+                    self.request_refresh();
                     self.set_notification(format!("Delete failed: {}", err), true);
                 }
             }
@@ -624,9 +697,11 @@ impl App {
             match result.result {
                 Ok(()) => {
                     // A worktree was created — cached discoveries are stale.
+                    // Stage path-based selection for the next background
+                    // discovery result; never shell out to Git on this thread.
                     self.worktree_cache.clear();
-                    self.refresh_worktree_sessions();
-                    self.select_worktree_by_path(result.thread_id, &result.path);
+                    self.pending_worktree_select = Some((result.thread_id, result.path.clone()));
+                    self.request_refresh();
                     self.set_notification(format!("Created worktree {}", result.branch), false);
                 }
                 Err(err) => {
@@ -744,9 +819,23 @@ impl App {
         self.agent_list_cursor = ui_state.agent_list_cursor;
 
         while self.running {
+            self.expire_transient_messages();
+            self.poll_mutation_results();
             self.poll_worktree_delete_results();
             self.poll_worktree_create_results();
             self.poll_refresh_results();
+
+            // Crash-safe UI-state persistence: save shortly after changes
+            // instead of only on clean exit (panic/kill loses little).
+            if self.ui_dirty && self.last_ui_save.elapsed() >= UI_SAVE_DEBOUNCE {
+                match self.save_ui_state() {
+                    Ok(()) => self.ui_dirty = false,
+                    Err(e) => {
+                        self.set_notification(format!("Failed to save UI state: {}", e), true)
+                    }
+                }
+                self.last_ui_save = Instant::now();
+            }
 
             // Periodic session refresh (includes agent scan), off-thread.
             if self.last_refresh.elapsed() >= REFRESH_INTERVAL
@@ -770,8 +859,8 @@ impl App {
                 self.request_grid_refresh();
                 self.poll_grid_preview_results();
             } else {
-            self.refresh_preview(&selected);
-            self.poll_preview_results();
+                self.refresh_preview(&selected);
+                self.poll_preview_results();
             }
 
             // Dirty-flag rendering: skip the (expensive) full redraw unless
@@ -786,15 +875,16 @@ impl App {
                     self.needs_redraw = true;
                 }
                 Some(event::AppEvent::Key(key)) => {
-                    // Any keypress can change visible state.
+                    // Any keypress can change visible state and UI state.
                     self.needs_redraw = true;
+                    self.ui_dirty = true;
                     // User is navigating — don't yank the selection later.
                     self.pending_selection_restore = None;
                     // Ctrl+C always quits
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
                     {
-                        self.running = false;
+                        self.request_quit();
                         continue;
                     }
 
@@ -819,17 +909,37 @@ impl App {
                 None => {}
             }
         }
-        self.save_ui_state();
+        if let Err(e) = self.save_ui_state() {
+            self.exit_warning = Some(format!("Failed to save UI state: {}", e));
+        }
         Ok(())
     }
 
-    /// True while something on screen animates or a transient message is
-    /// visible — forces tick-rate redraws for deletion progress and messages.
+    /// Expire static messages without redrawing the entire hierarchy on every
+    /// 250 ms poll. Exactly one redraw happens at the expiry boundary.
+    fn expire_transient_messages(&mut self) {
+        if self
+            .flash
+            .as_ref()
+            .is_some_and(|(_, created)| created.elapsed() >= Duration::from_secs(2))
+        {
+            self.flash = None;
+            self.needs_redraw = true;
+        }
+        if self
+            .notification
+            .as_ref()
+            .is_some_and(|notification| notification.created_at.elapsed() >= NOTIFICATION_DURATION)
+        {
+            self.notification = None;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Only real progress spinners force tick-rate redraws. Flash/notification
+    /// text and backend mutation labels are static between creation and expiry.
     fn animation_active(&self) -> bool {
-        !self.pending_worktree_deletes.is_empty()
-            || !self.pending_worktree_creates.is_empty()
-            || self.flash.is_some()
-            || self.notification.is_some()
+        !self.pending_worktree_deletes.is_empty() || !self.pending_worktree_creates.is_empty()
     }
 
     fn save_state(&mut self) {
@@ -839,7 +949,7 @@ impl App {
         }
     }
 
-    fn save_ui_state(&mut self) {
+    fn save_ui_state(&mut self) -> std::io::Result<()> {
         let open_nodes: Vec<Vec<String>> = self.tree_state.opened().iter().cloned().collect();
         let selected = {
             let sel = self.tree_state.selected();
@@ -868,9 +978,7 @@ impl App {
             agent_list_cursor,
             pins,
         };
-        if let Err(e) = persistence::save_ui(&ui) {
-            self.exit_warning = Some(format!("Failed to save UI state: {}", e));
-        }
+        persistence::save_ui(&ui)
     }
 }
 
@@ -888,6 +996,22 @@ mod tests {
             Vec::new(),
             Vec::new(),
         )
+    }
+
+    fn sample_state() -> AppState {
+        use crate::core::model::{Collection, Thread};
+        let mut collection = Collection::new("Work");
+        collection.threads.push(Thread::new("Edge Device Pipeline"));
+        collection.threads.push(Thread::new("Model Training Infra"));
+        AppState {
+            collections: vec![collection],
+            backend: mux::Backend::Tmux,
+            active_sessions: Vec::new(),
+            worktree_sessions: Vec::new(),
+            agent_sessions: Vec::new(),
+            pi_statuses: Vec::new(),
+            active_filter: false,
+        }
     }
 
     #[test]
@@ -912,10 +1036,10 @@ mod tests {
                 request_id: 1,
                 topology_generation: 0,
                 sessions: Some(SessionsPayload {
-                    live: Vec::new(),
+                    live: Ok(Vec::new()),
                     discoveries: Vec::new(),
                 }),
-                agents: Vec::new(),
+                agents: Ok(Vec::new()),
                 pi_statuses: Vec::new(),
                 trigger_mtime: None,
             })
@@ -937,7 +1061,7 @@ mod tests {
                 request_id: 4,
                 topology_generation: 1,
                 sessions: None,
-                agents: Vec::new(),
+                agents: Ok(Vec::new()),
                 pi_statuses: Vec::new(),
                 trigger_mtime: None,
             })
@@ -959,10 +1083,10 @@ mod tests {
                 request_id: 5,
                 topology_generation: 0,
                 sessions: Some(SessionsPayload {
-                    live: Vec::new(),
+                    live: Ok(Vec::new()),
                     discoveries: Vec::new(),
                 }),
-                agents: Vec::new(),
+                agents: Ok(Vec::new()),
                 pi_statuses: Vec::new(),
                 trigger_mtime: None,
             })
@@ -976,6 +1100,184 @@ mod tests {
     }
 
     #[test]
+    fn failed_topology_refresh_retains_last_known_sessions() {
+        let mut app = test_app();
+        app.state = sample_state();
+        let session_name = "tws_work_edge-device-pipeline_main".to_string();
+        app.state.refresh_sessions(&[(session_name.clone(), 42)]);
+        app.active_refresh_request = Some(7);
+        app.refresh_tx
+            .send(RefreshResult {
+                request_id: 7,
+                topology_generation: 0,
+                sessions: Some(SessionsPayload {
+                    live: Err("permission denied".to_string()),
+                    discoveries: Vec::new(),
+                }),
+                agents: Err("scan unavailable".to_string()),
+                pi_statuses: Vec::new(),
+                trigger_mtime: None,
+            })
+            .unwrap();
+
+        app.poll_refresh_results();
+
+        assert_eq!(app.state.active_sessions.len(), 1);
+        assert_eq!(app.state.active_sessions[0].tmux_session_name, session_name);
+        assert_eq!(app.topology_generation, 0);
+    }
+
+    #[test]
+    fn failed_agent_scan_retains_last_known_agents() {
+        let mut app = test_app();
+        app.state = sample_state();
+        let session_name = "tws_work_edge-device-pipeline_main".to_string();
+        app.state.refresh_sessions(&[(session_name.clone(), 42)]);
+        app.state.agent_sessions.push(AgentSession {
+            agent_type: crate::core::model::AgentType::ClaudeCode,
+            tmux_session_name: session_name,
+            window_index: 0,
+            pane_id: "%1".to_string(),
+            display_name: "claude".to_string(),
+            renamed: false,
+            pin_slot: None,
+        });
+        app.active_scan_request = Some(8);
+        app.refresh_tx
+            .send(RefreshResult {
+                request_id: 8,
+                topology_generation: 0,
+                sessions: None,
+                agents: Err("ps failed".to_string()),
+                pi_statuses: Vec::new(),
+                trigger_mtime: None,
+            })
+            .unwrap();
+
+        app.poll_refresh_results();
+
+        assert_eq!(app.state.agent_sessions.len(), 1);
+        assert_eq!(app.state.agent_sessions[0].pane_id, "%1");
+    }
+
+    #[test]
+    fn successful_scan_reanchors_selection_when_agent_vanishes() {
+        let mut app = test_app();
+        app.state = sample_state();
+        let collection_id = app.state.collections[0].id.to_string();
+        let thread_id = app.state.collections[0].threads[0].id.to_string();
+        let session_name = "tws_work_edge-device-pipeline_main".to_string();
+        app.state.refresh_sessions(&[(session_name.clone(), 42)]);
+        app.state.agent_sessions.push(AgentSession {
+            agent_type: crate::core::model::AgentType::ClaudeCode,
+            tmux_session_name: session_name.clone(),
+            window_index: 0,
+            pane_id: "%1".to_string(),
+            display_name: "claude".to_string(),
+            renamed: false,
+            pin_slot: None,
+        });
+        let stale_path = vec![collection_id, thread_id, session_name, "%1".to_string()];
+        app.select_tree_path_expanded(stale_path.clone());
+        app.active_scan_request = Some(9);
+        app.refresh_tx
+            .send(RefreshResult {
+                request_id: 9,
+                topology_generation: 0,
+                sessions: None,
+                agents: Ok(Vec::new()),
+                pi_statuses: Vec::new(),
+                trigger_mtime: None,
+            })
+            .unwrap();
+
+        app.poll_refresh_results();
+
+        assert_ne!(app.tree_state.selected(), stale_path.as_slice());
+        assert!(!matches!(
+            app.state.resolve_selection(app.tree_state.selected()),
+            SelectedItem::None
+        ));
+    }
+
+    #[test]
+    fn migrate_session_paths_updates_selected_and_opened_paths() {
+        let mut app = test_app();
+        let old = "tws_work_thread_old".to_string();
+        let new = "tws_work_thread_new".to_string();
+        let parent = vec!["collection".to_string(), "thread".to_string()];
+        let mut session = parent.clone();
+        session.push(old.clone());
+        app.tree_state.open(parent.clone());
+        app.tree_state.open(session.clone());
+        app.tree_state.select(session);
+
+        app.migrate_session_paths(&[(old, new.clone())]);
+
+        assert_eq!(app.tree_state.selected().last(), Some(&new));
+        assert!(
+            app.tree_state
+                .opened()
+                .iter()
+                .any(|path| path.last() == Some(&new))
+        );
+    }
+
+    #[test]
+    fn moved_session_path_relocates_to_destination_parent() {
+        let mut app = test_app();
+        app.state = sample_state();
+        let old_parent = vec![
+            app.state.collections[0].id.to_string(),
+            app.state.collections[0].threads[0].id.to_string(),
+        ];
+        let session_name = "tws_work_model-training-infra_main".to_string();
+        let mut selected = old_parent;
+        selected.push(session_name.clone());
+        app.select_tree_path_expanded(selected);
+
+        app.relocate_moved_session_path(&session_name, 0, 1);
+
+        let expected = vec![
+            app.state.collections[0].id.to_string(),
+            app.state.collections[0].threads[1].id.to_string(),
+            session_name,
+        ];
+        assert_eq!(app.tree_state.selected(), expected.as_slice());
+    }
+
+    #[test]
+    fn static_messages_do_not_force_tick_redraws() {
+        let mut app = test_app();
+        app.set_flash("saved");
+        app.set_notification("notice", false);
+        assert!(!app.animation_active());
+    }
+
+    #[test]
+    fn expiring_static_messages_requests_one_redraw() {
+        let mut app = test_app();
+        app.flash = Some((
+            "old".to_string(),
+            Instant::now().checked_sub(Duration::from_secs(3)).unwrap(),
+        ));
+        app.notification = Some(Notification {
+            message: "old notice".to_string(),
+            is_error: false,
+            created_at: Instant::now()
+                .checked_sub(NOTIFICATION_DURATION + Duration::from_secs(1))
+                .unwrap(),
+        });
+        app.needs_redraw = false;
+
+        app.expire_transient_messages();
+
+        assert!(app.flash.is_none());
+        assert!(app.notification.is_none());
+        assert!(app.needs_redraw);
+    }
+
+    #[test]
     fn post_attach_path_draws_before_requesting_refresh() {
         let source = include_str!("input.rs");
         let start = source
@@ -986,12 +1288,17 @@ mod tests {
             .map(|offset| start + offset)
             .expect("next method exists");
         let body = &source[start..end];
-        let draw = body.find("self.draw(terminal)?").expect("resume draw exists");
+        let draw = body
+            .find("self.draw(terminal)?")
+            .expect("resume draw exists");
         let refresh = body
             .find("self.request_refresh()")
             .expect("async refresh exists");
 
-        assert!(draw < refresh, "post-attach refresh must start after the first frame");
+        assert!(
+            draw < refresh,
+            "post-attach refresh must start after the first frame"
+        );
         assert!(
             !body.contains("self.do_refresh_sessions()"),
             "post-attach path must never perform synchronous reconciliation"

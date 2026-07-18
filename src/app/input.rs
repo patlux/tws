@@ -208,6 +208,8 @@ impl App {
             self.tree_state.open(path[..i].to_vec());
         }
         self.tree_state.select(path);
+        self.tree_cache_dirty = true;
+        self.ui_dirty = true;
     }
 
     pub(super) fn ensure_visible_tree_selection(&mut self) {
@@ -220,6 +222,7 @@ impl App {
         ) {
             let next = self.next_visible_path(self.tree_state.selected());
             self.tree_state.select(next);
+            self.ui_dirty = true;
         }
     }
 
@@ -234,7 +237,7 @@ impl App {
             None => return Ok(()),
         };
         match action {
-            Action::Quit => self.running = false,
+            Action::Quit => self.request_quit(),
             Action::MoveDown => {
                 self.tree_state.key_down();
             }
@@ -243,17 +246,20 @@ impl App {
             }
             Action::MoveLeft => {
                 if self.tree_state.key_left() {
-                    self.refresh_worktree_sessions();
+                    self.tree_cache_dirty = true;
+                    self.refresh_worktree_sessions_cached();
                 }
             }
             Action::MoveRight => {
                 if self.tree_state.key_right() {
-                    self.refresh_worktree_sessions();
+                    self.tree_cache_dirty = true;
+                    self.refresh_worktree_sessions_cached();
                 }
             }
             Action::ToggleSelect => {
                 if self.tree_state.toggle_selected() {
-                    self.refresh_worktree_sessions();
+                    self.tree_cache_dirty = true;
+                    self.refresh_worktree_sessions_cached();
                 }
             }
             Action::Enter => self.start_enter(terminal)?,
@@ -293,7 +299,8 @@ impl App {
             Action::RecentSession5 => self.attach_recent(4, terminal)?,
             Action::ExpandAll => {
                 self.toggle_expand_all();
-                self.refresh_worktree_sessions();
+                self.tree_cache_dirty = true;
+                self.refresh_worktree_sessions_cached();
             }
             _ => {}
         }
@@ -338,25 +345,26 @@ impl App {
             if let KeyCode::Char(c) = code
                 && c.is_ascii_digit()
             {
-                    let slot: u8 = c.to_digit(10).unwrap() as u8;
-                    let snapshot = agents.iter().find(|a| a.pane_id == pending);
-                    let already_in_slot = snapshot
-                        .and_then(|a| a.pin_slot)
-                        .map(|s| s == slot)
-                        .unwrap_or(false);
-                    let path = snapshot.map(|a| {
+                let slot: u8 = c.to_digit(10).unwrap() as u8;
+                let snapshot = agents.iter().find(|a| a.pane_id == pending);
+                let already_in_slot = snapshot
+                    .and_then(|a| a.pin_slot)
+                    .map(|s| s == slot)
+                    .unwrap_or(false);
+                let path = snapshot.map(|a| {
                     format!(
                         "{} / {} / {}",
                         a.thread_name, a.session_display_name, a.agent_display_name
                     )
-                    });
-                    self.state.pin_agent_to(&pending, slot);
+                });
+                self.state.pin_agent_to(&pending, slot);
+                self.invalidate_render_models();
                 if !already_in_slot && let Some(p) = path {
-                            self.set_flash(&format!("Pin {}: {}", slot, p));
-                        }
-                    self.reanchor_agent_cursor(Some(pending));
-                    return Ok(());
+                    self.set_flash(&format!("Pin {}: {}", slot, p));
                 }
+                self.reanchor_agent_cursor(Some(pending));
+                return Ok(());
+            }
             if matches!(code, KeyCode::Esc) {
                 return Ok(());
             }
@@ -403,7 +411,7 @@ impl App {
                 self.view_mode = ViewMode::Tree;
             }
             Some(Action::Quit) => {
-                self.running = false;
+                self.request_quit();
             }
             Some(Action::PinAgent) => {
                 if let Some(pane_id) = current_pane_id {
@@ -417,10 +425,12 @@ impl App {
                     });
                     if already_pinned {
                         self.state.unpin_agent(&pane_id);
+                        self.invalidate_render_models();
                         if let Some(p) = &path {
                             self.set_flash(&format!("Unpinned: {}", p));
                         }
                     } else {
+                        self.invalidate_render_models();
                         match self.state.pin_agent_auto(&pane_id) {
                             Some(slot) => {
                                 if let Some(p) = &path {
@@ -443,14 +453,14 @@ impl App {
                 if let KeyCode::Char(c) = code
                     && c.is_ascii_digit()
                 {
-                        let slot: u8 = c.to_digit(10).unwrap() as u8;
-                        if let Some(agent) = self.state.agent_by_pin_slot(slot) {
-                            let target_id = agent.pane_id.clone();
-                            if let Some(idx) = agents.iter().position(|a| a.pane_id == target_id) {
-                                self.agent_list_cursor = idx;
-                            }
+                    let slot: u8 = c.to_digit(10).unwrap() as u8;
+                    if let Some(agent) = self.state.agent_by_pin_slot(slot) {
+                        let target_id = agent.pane_id.clone();
+                        if let Some(idx) = agents.iter().position(|a| a.pane_id == target_id) {
+                            self.agent_list_cursor = idx;
                         }
                     }
+                }
             }
         }
         Ok(())
@@ -467,9 +477,9 @@ impl App {
         if let Some(id) = anchor_pane_id
             && let Some(idx) = agents.iter().position(|a| a.pane_id == id)
         {
-                self.agent_list_cursor = idx;
-                return;
-            }
+            self.agent_list_cursor = idx;
+            return;
+        }
         self.agent_list_cursor = self.agent_list_cursor.min(agents.len() - 1);
     }
 
@@ -543,8 +553,8 @@ impl App {
                     && let Mode::Confirm { purpose } = &self.mode
                     && purpose.requires_explicit_yes()
                 {
-                            return;
-                        }
+                    return;
+                }
                 self.execute_confirm();
             }
             Some(Action::Cancel) => {
@@ -588,10 +598,11 @@ impl App {
             | SelectedItem::Session(idx, _, _)
             | SelectedItem::Worktree(idx, _, _)
             | SelectedItem::Agent(idx, _, _, _) => InputPurpose::AddThread {
-                    collection_idx: idx,
+                collection_idx: idx,
             },
             SelectedItem::None => {
                 let col_idx = self.state.ensure_root_collection();
+                self.invalidate_render_models();
                 InputPurpose::AddThread {
                     collection_idx: col_idx,
                 }
@@ -680,6 +691,7 @@ impl App {
             let mut sel = thread_path;
             sel.push(wt.tmux_session_name.clone());
             self.tree_state.select(sel);
+            self.ui_dirty = true;
         }
     }
 
@@ -761,13 +773,15 @@ impl App {
         };
         if hidden {
             self.tree_state.select(fallback_path);
+            self.invalidate_render_models();
             self.save_state();
             self.set_flash("Hidden");
-            }
+        }
     }
 
     pub(super) fn toggle_active_filter(&mut self) {
         self.state.active_filter = !self.state.active_filter;
+        self.invalidate_render_models();
         if self.state.active_filter {
             self.ensure_visible_tree_selection();
             self.set_flash("Active filter on");
@@ -782,6 +796,7 @@ impl App {
             self.set_flash("No hidden collections or threads");
             return;
         }
+        self.invalidate_render_models();
         self.save_state();
         self.set_flash(&format!("Restored {} hidden", restored));
     }
@@ -1014,6 +1029,7 @@ impl App {
             }
             SelectedItem::None => {
                 let (col_idx, thread_idx) = self.state.ensure_general_thread();
+                self.invalidate_render_models();
                 self.mode = Mode::Input {
                     purpose: InputPurpose::NewSession {
                         col_idx,
@@ -1084,8 +1100,8 @@ impl App {
                 if let Mode::Finder { state } = &mut self.mode
                     && !state.filtered.is_empty()
                 {
-                        state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
-                    }
+                    state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
+                }
             }
             Some(Action::MoveUp) => {
                 if let Mode::Finder { state } = &mut self.mode {
@@ -1100,12 +1116,12 @@ impl App {
                 if let Mode::Finder { state } = old_mode
                     && let Some(&idx) = state.filtered.get(state.cursor)
                 {
-                        let name = state.all_entries[idx].0.clone();
-                        self.open_session_or_worktree(&name, terminal)?;
-                        if let Some(path) = self.state.session_tree_path(&name) {
-                            self.select_tree_path_expanded(path);
-                        }
+                    let name = state.all_entries[idx].0.clone();
+                    self.open_session_or_worktree(&name, terminal)?;
+                    if let Some(path) = self.state.session_tree_path(&name) {
+                        self.select_tree_path_expanded(path);
                     }
+                }
             }
             Some(Action::Backspace) => {
                 if let Mode::Finder { state } = &mut self.mode {
@@ -1118,9 +1134,9 @@ impl App {
                 if let KeyCode::Char(c) = code
                     && let Mode::Finder { state } = &mut self.mode
                 {
-                        state.query.push(c);
-                        state.update_filter();
-                    }
+                    state.query.push(c);
+                    state.update_filter();
+                }
             }
         }
         Ok(())
@@ -1139,8 +1155,8 @@ impl App {
             if let Mode::ThreadPicker { state, .. } = &mut self.mode
                 && !state.filtered.is_empty()
             {
-                    state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
-                }
+                state.cursor = (state.cursor + 1).min(state.filtered.len() - 1);
+            }
         } else if nav_up {
             if let Mode::ThreadPicker { state, .. } = &mut self.mode {
                 state.cursor = state.cursor.saturating_sub(1);
@@ -1180,10 +1196,10 @@ impl App {
         } = old_mode
             && let Some(&idx) = state.filtered.get(state.cursor)
         {
-                let key = &state.all_entries[idx].0;
-                let dest_display = state.all_entries[idx].1.clone();
+            let key = &state.all_entries[idx].0;
+            let dest_display = state.all_entries[idx].1.clone();
 
-                let parts: Vec<&str> = key.split(':').collect();
+            let parts: Vec<&str> = key.split(':').collect();
             if parts.len() != 2 {
                 return;
             }
@@ -1200,21 +1216,24 @@ impl App {
                 self.state
                     .make_session_name(dest_col, dest_thread, &session_label)
             {
-                    if let Err(err) = mux::rename_session(&session_name, &new_tmux_name) {
-                        self.set_error(format!("Failed to move session: {}", err));
-                        return;
-                    }
-                    if self.marked_sessions.remove(&session_name) {
-                        self.marked_sessions.insert(new_tmux_name.clone());
-                    }
-                    self.do_refresh_sessions();
-
-                    if let Some(path) = self.state.session_tree_path(&new_tmux_name) {
-                        self.select_tree_path_expanded(path);
-                    }
-                        self.set_flash(&format!("Session moved to {}", dest_display));
+                if new_tmux_name == session_name {
+                    self.set_flash("Session is already in that thread");
+                    return;
                 }
+                self.start_mutation(
+                    "Moving session…",
+                    MutationJob::Rename {
+                        pairs: vec![(session_name, new_tmux_name.clone())],
+                        follow_up: mutation::RenameFollowUp::Move {
+                            destination: dest_display,
+                            dest_col,
+                            dest_thread,
+                            new_session_name: new_tmux_name,
+                        },
+                    },
+                );
             }
+        }
     }
 
     pub(super) fn confirm_input(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
@@ -1228,11 +1247,13 @@ impl App {
             match purpose {
                 InputPurpose::AddCollection => {
                     self.state.add_collection(trimmed);
+                    self.invalidate_render_models();
                     self.save_state();
                     self.set_flash("Collection created");
                 }
                 InputPurpose::AddThread { collection_idx } => {
                     self.state.add_thread(collection_idx, trimmed);
+                    self.invalidate_render_models();
                     // Auto-expand the collection so the new thread is visible
                     let col_id = self.state.collections[collection_idx].id.to_string();
                     self.tree_state.open(vec![col_id]);
@@ -1240,89 +1261,62 @@ impl App {
                     self.set_flash("Thread added");
                 }
                 InputPurpose::RenameCollection { idx } => {
-                    // Collect old tmux session names before the rename changes the prefix.
-                    let old_sessions: Vec<(String, String, usize)> = self.state.collections[idx]
-                        .threads
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(pi, thread)| {
-                            self.state
-                                .sessions_for_thread(thread.id)
-                                .into_iter()
-                                .map(move |s| {
-                                    (s.tmux_session_name.clone(), s.display_name.clone(), pi)
-                                })
-                        })
-                        .collect();
-                    self.state.rename_collection(idx, trimmed);
-                    let mut rename_errors = Vec::new();
-                    for (old_name, label, thread_idx) in &old_sessions {
-                        if let Some(new_name) =
-                            self.state.make_session_name(idx, *thread_idx, label)
-                        {
-                            match mux::rename_session(old_name, &new_name) {
-                                Ok(()) => {
-                                    if self.marked_sessions.remove(old_name) {
-                                        self.marked_sessions.insert(new_name);
-                                    }
-                                }
-                                Err(err) => rename_errors.push(format!("{}: {}", old_name, err)),
+                    // Build every backend rename without changing hierarchy
+                    // state. The worker commits all pairs or rolls them back;
+                    // only then does the main thread persist the new name.
+                    let collection = &self.state.collections[idx];
+                    let mut pairs = Vec::new();
+                    for thread in &collection.threads {
+                        for session in self.state.sessions_for_thread(thread.id) {
+                            let new_name = if collection.is_root {
+                                mux::root_name(&thread.name, &session.display_name)
+                            } else {
+                                mux::regular_name(&trimmed, &thread.name, &session.display_name)
+                            };
+                            if new_name != session.tmux_session_name {
+                                pairs.push((session.tmux_session_name.clone(), new_name));
                             }
                         }
                     }
-                    self.do_refresh_sessions();
-                    self.save_state();
-                    if rename_errors.is_empty() {
-                        self.set_flash("Collection renamed");
-                    } else {
-                        self.set_error(format!(
-                            "Collection renamed, but tmux rename failed:\n{}",
-                            rename_errors.join("\n")
-                        ));
-                    }
+                    self.start_mutation(
+                        "Renaming collection…",
+                        MutationJob::Rename {
+                            pairs,
+                            follow_up: mutation::RenameFollowUp::Collection {
+                                idx,
+                                new_name: trimmed,
+                            },
+                        },
+                    );
                 }
                 InputPurpose::RenameThread {
                     col_idx,
                     thread_idx,
                 } => {
-                    // Collect old tmux session names before the rename changes the prefix.
-                    let old_sessions: Vec<(String, String)> = self.state.collections[col_idx]
-                        .threads
-                        .get(thread_idx)
-                        .map(|thread| {
-                            self.state
-                                .sessions_for_thread(thread.id)
-                                .into_iter()
-                                .map(|s| (s.tmux_session_name.clone(), s.display_name.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    self.state.rename_thread(col_idx, thread_idx, trimmed);
-                    let mut rename_errors = Vec::new();
-                    for (old_name, label) in &old_sessions {
-                        if let Some(new_name) =
-                            self.state.make_session_name(col_idx, thread_idx, label)
-                        {
-                            match mux::rename_session(old_name, &new_name) {
-                                Ok(()) => {
-                                    if self.marked_sessions.remove(old_name) {
-                                        self.marked_sessions.insert(new_name);
-                                    }
-                                }
-                                Err(err) => rename_errors.push(format!("{}: {}", old_name, err)),
-                            }
+                    let collection = &self.state.collections[col_idx];
+                    let thread = &collection.threads[thread_idx];
+                    let mut pairs = Vec::new();
+                    for session in self.state.sessions_for_thread(thread.id) {
+                        let new_name = if collection.is_root {
+                            mux::root_name(&trimmed, &session.display_name)
+                        } else {
+                            mux::regular_name(&collection.name, &trimmed, &session.display_name)
+                        };
+                        if new_name != session.tmux_session_name {
+                            pairs.push((session.tmux_session_name.clone(), new_name));
                         }
                     }
-                    self.do_refresh_sessions();
-                    self.save_state();
-                    if rename_errors.is_empty() {
-                        self.set_flash("Thread renamed");
-                    } else {
-                        self.set_error(format!(
-                            "Thread renamed, but tmux rename failed:\n{}",
-                            rename_errors.join("\n")
-                        ));
-                    }
+                    self.start_mutation(
+                        "Renaming thread…",
+                        MutationJob::Rename {
+                            pairs,
+                            follow_up: mutation::RenameFollowUp::Thread {
+                                col_idx,
+                                thread_idx,
+                                new_name: trimmed,
+                            },
+                        },
+                    );
                 }
                 InputPurpose::NewSession {
                     col_idx,
@@ -1384,17 +1378,16 @@ impl App {
                     if let Some(new_tmux_name) =
                         self.state.make_session_name(col_idx, thread_idx, &trimmed)
                     {
-                        match mux::rename_session(&old_tmux_name, &new_tmux_name) {
-                            Ok(()) => {
-                                if self.marked_sessions.remove(&old_tmux_name) {
-                                    self.marked_sessions.insert(new_tmux_name.clone());
-                                }
-                                self.do_refresh_sessions();
-                                self.set_flash("Session renamed");
-                            }
-                            Err(err) => {
-                                self.set_error(format!("Failed to rename session: {}", err));
-                            }
+                        if new_tmux_name == old_tmux_name {
+                            self.set_flash("Session name unchanged");
+                        } else {
+                            self.start_mutation(
+                                "Renaming session…",
+                                MutationJob::Rename {
+                                    pairs: vec![(old_tmux_name, new_tmux_name)],
+                                    follow_up: mutation::RenameFollowUp::Session,
+                                },
+                            );
                         }
                     }
                 }
@@ -1407,6 +1400,7 @@ impl App {
                     {
                         agent.display_name = trimmed;
                         agent.renamed = true;
+                        self.invalidate_render_models();
                         self.set_flash("Agent renamed");
                     }
                 }
@@ -1420,166 +1414,91 @@ impl App {
         if let Mode::Confirm { purpose } = old_mode {
             match purpose {
                 ConfirmPurpose::DeleteCollection { idx, .. } => {
-                    // Refresh first so active_sessions reflects any sessions created
-                    // since the last 2-second tick.
-                    self.do_refresh_sessions();
-                    // Collect session names before deletion
-                    let col = &self.state.collections[idx];
-                    let mut session_names: Vec<String> = Vec::new();
-                    for thread in &col.threads {
-                        for s in self.state.sessions_for_thread(thread.id) {
-                            session_names.push(s.tmux_session_name.clone());
-                        }
-                    }
-                    let mut kill_errors = Vec::new();
-                    for name in &session_names {
-                        if let Err(err) = mux::kill_session(name) {
-                            kill_errors.push(format!("{}: {}", name, err));
-                        }
-                        self.marked_sessions.remove(name);
-                    }
-                    self.state.delete_collection(idx);
-                    // Select the item that slid into this position, or the one before
-                    // it, rather than always jumping to the first collection.
-                    let new_sel = self
-                        .state
-                        .collections
-                        .get(idx)
-                        .or_else(|| self.state.collections.last())
-                        .map(|c| vec![c.id.to_string()])
-                        .unwrap_or_default();
-                    self.tree_state.select(new_sel);
-                    self.save_state();
-                    self.do_refresh_sessions();
-                    if kill_errors.is_empty() {
-                        self.set_flash("Collection deleted");
-                    } else {
-                        self.set_error(format!(
-                            "Collection deleted, but killing sessions failed:\n{}",
-                            kill_errors.join("\n")
-                        ));
-                    }
-                    }
+                    let collection = &self.state.collections[idx];
+                    let prefixes: Vec<String> = collection
+                        .threads
+                        .iter()
+                        .map(|thread| {
+                            if collection.is_root {
+                                mux::root_prefix(&thread.name)
+                            } else {
+                                mux::regular_prefix(&collection.name, &thread.name)
+                            }
+                        })
+                        .collect();
+                    self.start_mutation(
+                        "Deleting collection…",
+                        MutationJob::KillByPrefix {
+                            prefixes,
+                            follow_up: mutation::KillFollowUp::DeleteCollection { idx },
+                        },
+                    );
+                }
                 ConfirmPurpose::DeleteThread {
                     col_idx,
                     thread_idx,
                     ..
                 } => {
-                    // Refresh first so active_sessions is current.
-                    self.do_refresh_sessions();
-                    let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
-                    let session_names: Vec<String> = self
-                        .state
-                        .sessions_for_thread(thread_id)
-                        .iter()
-                        .map(|s| s.tmux_session_name.clone())
-                        .collect();
-                    let mut kill_errors = Vec::new();
-                    for name in session_names {
-                        if let Err(err) = mux::kill_session(&name) {
-                            kill_errors.push(format!("{}: {}", name, err));
-                        }
-                        self.marked_sessions.remove(&name);
-                    }
-                    self.state.delete_thread(col_idx, thread_idx);
-                    // Select the thread that slid into this position, or the one
-                    // before it, falling back to the collection itself.
-                    let col = &self.state.collections[col_idx];
-                    let new_sel = col
-                        .threads
-                        .get(thread_idx)
-                        .or_else(|| col.threads.last())
-                        .map(|p| vec![col.id.to_string(), p.id.to_string()])
-                        .unwrap_or_else(|| vec![col.id.to_string()]);
-                    self.tree_state.select(new_sel);
-                    self.save_state();
-                    self.do_refresh_sessions();
-                    if kill_errors.is_empty() {
-                        self.set_flash("Thread deleted");
+                    let collection = &self.state.collections[col_idx];
+                    let thread = &collection.threads[thread_idx];
+                    let prefix = if collection.is_root {
+                        mux::root_prefix(&thread.name)
                     } else {
-                        self.set_error(format!(
-                            "Thread deleted, but killing sessions failed:\n{}",
-                            kill_errors.join("\n")
-                        ));
-                    }
-                    }
+                        mux::regular_prefix(&collection.name, &thread.name)
+                    };
+                    self.start_mutation(
+                        "Deleting thread…",
+                        MutationJob::KillByPrefix {
+                            prefixes: vec![prefix],
+                            follow_up: mutation::KillFollowUp::DeleteThread {
+                                col_idx,
+                                thread_idx,
+                            },
+                        },
+                    );
+                }
                 ConfirmPurpose::KillSession { session_name } => {
-                    if let Err(err) = mux::kill_session(&session_name) {
-                        self.set_error(format!("Failed to kill session: {}", err));
-                        return;
-                    }
-                    self.marked_sessions.remove(&session_name);
-                    self.do_refresh_sessions();
-                    // Move selection up to the parent thread.
-                    let parent: Vec<String> = self
-                        .tree_state
-                        .selected()
-                        .iter()
-                        .rev()
-                        .skip(1)
-                        .rev()
-                        .cloned()
-                        .collect();
-                    self.tree_state.select(parent);
-                    self.set_flash("Session killed");
-                    }
+                    let parent = parent_selection_path(self.tree_state.selected());
+                    self.start_mutation(
+                        "Killing session…",
+                        MutationJob::Kill {
+                            names: vec![session_name],
+                            follow_up: mutation::KillFollowUp::SelectParent { path: parent },
+                        },
+                    );
+                }
                 ConfirmPurpose::KillAllSessions {
                     col_idx,
                     thread_idx,
                     ..
                 } => {
-                    let thread_id = self.state.collections[col_idx].threads[thread_idx].id;
-                    let names: Vec<String> = self
-                        .state
-                        .sessions_for_thread(thread_id)
-                        .iter()
-                        .map(|s| s.tmux_session_name.clone())
-                        .collect();
-                    let mut kill_errors = Vec::new();
-                    for name in &names {
-                        if let Err(err) = mux::kill_session(name) {
-                            kill_errors.push(format!("{}: {}", name, err));
-                        }
-                        self.marked_sessions.remove(name);
-                    }
-                    self.do_refresh_sessions();
-                    // Select the parent thread.
-                    let col = &self.state.collections[col_idx];
-                    let thread = &col.threads[thread_idx];
-                    let thread_path = if col.is_root {
-                        vec![thread.id.to_string()]
+                    let collection = &self.state.collections[col_idx];
+                    let thread = &collection.threads[thread_idx];
+                    let prefix = if collection.is_root {
+                        mux::root_prefix(&thread.name)
                     } else {
-                        vec![col.id.to_string(), thread.id.to_string()]
+                        mux::regular_prefix(&collection.name, &thread.name)
                     };
-                    self.tree_state.select(thread_path);
-                    if kill_errors.is_empty() {
-                        self.set_flash("All sessions killed");
-                    } else {
-                        self.set_error(format!(
-                            "Killing sessions failed:\n{}",
-                            kill_errors.join("\n")
-                        ));
-                    }
-                    }
+                    self.start_mutation(
+                        "Killing sessions…",
+                        MutationJob::KillByPrefix {
+                            prefixes: vec![prefix],
+                            follow_up: mutation::KillFollowUp::SelectThread {
+                                col_idx,
+                                thread_idx,
+                            },
+                        },
+                    );
+                }
                 ConfirmPurpose::KillMarkedSessions { session_names } => {
-                    let count = session_names.len();
-                    let mut kill_errors = Vec::new();
-                    for name in &session_names {
-                        if let Err(err) = mux::kill_session(name) {
-                            kill_errors.push(format!("{}: {}", name, err));
-                        }
-                    }
-                    self.marked_sessions.clear();
-                    self.do_refresh_sessions();
-                    if kill_errors.is_empty() {
-                        self.set_flash(&format!("Killed {} sessions", count));
-                    } else {
-                        self.set_error(format!(
-                            "Killing sessions failed:\n{}",
-                            kill_errors.join("\n")
-                        ));
-                    }
-                    }
+                    self.start_mutation(
+                        "Killing marked sessions…",
+                        MutationJob::Kill {
+                            names: session_names,
+                            follow_up: mutation::KillFollowUp::Marked,
+                        },
+                    );
+                }
                 ConfirmPurpose::DeleteWorktree {
                     repo,
                     path,
@@ -1720,17 +1639,30 @@ impl App {
         session_name: &str,
         terminal: &mut Tui,
     ) -> std::io::Result<()> {
-        if mux::is_inside() {
-            match mux::switch_client(session_name) {
-                Ok(()) => self.running = false,
-                Err(err) => {
-                    self.set_error(format!("Failed to switch to session: {}", err));
-                }
-            }
+        if self.pending_mutation.is_some() {
+            self.set_flash("Wait for the backend operation to finish before attaching");
             return Ok(());
         }
 
-        // Outside the multiplexer: suspend TUI, attach (blocks), then resume.
+        if mux::is_inside() {
+            match mux::switch_client(session_name) {
+                Ok(()) => {
+                    self.running = false;
+                    return Ok(());
+                }
+                Err(err) if mux::switch_error_indicates_no_client(&err) => {
+                    // Stale inherited client environment: fall through to an
+                    // external attach. attach_session scrubs TMUX/ZELLIJ.
+                }
+                Err(err) => {
+                    self.set_error(format!("Failed to switch to session: {}", err));
+                    return Ok(());
+                }
+            }
+        }
+
+        // Outside the multiplexer (or stale client env): suspend TUI, attach
+        // (blocks), then resume.
         // Clear the main screen on both transitions so output left by prior
         // clients never flashes between alternate screens.
         tui::restore()?;
@@ -1750,7 +1682,8 @@ impl App {
             )),
             Err(err) => self.set_error(format!(
                 "Failed to attach to {} session: {}",
-                mux::name(), err
+                mux::name(),
+                err
             )),
         }
 

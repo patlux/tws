@@ -24,11 +24,11 @@ impl App {
                         if let Some(raw) = mux::capture_pane(&session_name, &pane_id)
                             && let Ok(mut text) = raw.as_bytes().into_text()
                         {
-                                // Remap ANSI resets so the app
-                                // background shows through, keeping the agent's real colors.
-                                crate::core::ansi::clear_reset_backgrounds(&mut text);
-                                let _ = tx.send(PreviewResult { pane_id, text });
-                            }
+                            // Remap ANSI resets so the app
+                            // background shows through, keeping the agent's real colors.
+                            crate::core::ansi::clear_reset_backgrounds(&mut text);
+                            let _ = tx.send(PreviewResult { pane_id, text });
+                        }
                     });
                 }
             }
@@ -94,29 +94,9 @@ impl App {
         }
     }
 
-    /// Synchronous refresh — reserved for mutations whose next frame must
-    /// confirm the backend change. Never call this from post-attach resume:
-    /// returning control to the user must not wait on discovery or scans.
-    pub(super) fn do_refresh_sessions(&mut self) {
-        self.invalidate_background_refreshes();
-        self.refresh_worktree_sessions();
-        let live = mux::list_managed_sessions_with_timestamps();
-        self.state.refresh_sessions(&live);
-        self.prune_marked_sessions();
-        self.last_refresh = Instant::now();
-        self.do_agent_scan();
-        self.needs_redraw = true;
-    }
-
     fn next_refresh_request_id(&mut self) -> u64 {
         self.next_refresh_request = self.next_refresh_request.wrapping_add(1);
         self.next_refresh_request
-    }
-
-    fn invalidate_background_refreshes(&mut self) {
-        self.active_refresh_request = None;
-        self.active_scan_request = None;
-        self.topology_generation = self.topology_generation.wrapping_add(1);
     }
 
     /// Kick off a latest-wins full reconciliation. Collection is entirely
@@ -131,6 +111,12 @@ impl App {
         let topology_generation = self.topology_generation;
         let tx = self.refresh_tx.clone();
         let worktree_jobs = self.expanded_worktree_jobs();
+        let fallback_session_names: Vec<String> = self
+            .state
+            .active_sessions
+            .iter()
+            .map(|session| session.tmux_session_name.clone())
+            .collect();
         let status_dir = persistence::config_dir().join("pi-status");
         let trigger_path = persistence::config_dir().join("agent.trigger");
         std::thread::spawn(move || {
@@ -141,17 +127,36 @@ impl App {
                 DiscoverOptions,
                 Vec<worktrees::DiscoveredWorktree>,
             )> = worktree_jobs
-                    .into_iter()
-                    .map(|(thread_id, repo, options)| {
-                        let wts = worktrees::discover(&repo, options).unwrap_or_default();
-                        (thread_id, repo, options, wts)
-                    })
-                    .collect();
-            // Scan all live tws sessions (superset of the matched ones);
-            // apply_agent_scan filters down to active sessions.
-            let session_names: Vec<String> = live.iter().map(|(n, _)| n.clone()).collect();
+                .into_iter()
+                .map(|(thread_id, repo, options)| {
+                    let wts = worktrees::discover(&repo, options).unwrap_or_default();
+                    (thread_id, repo, options, wts)
+                })
+                .collect();
+            // Scan all live managed sessions (superset of the matched ones).
+            // If topology discovery failed, scan the retained session names;
+            // failures remain typed so the main thread keeps prior agents.
+            let session_names: Vec<String> = live
+                .as_ref()
+                .map(|sessions| sessions.iter().map(|(name, _)| name.clone()).collect())
+                .unwrap_or(fallback_session_names);
             let agents = mux::scan_agents(&session_names);
-            let pi_statuses = pi_status::load_all(&status_dir, mux::backend());
+            // Directory enumeration/parsing/filtering stays off the UI
+            // thread. Filtering is read-only: TWS never unlinks writer-owned
+            // sidecars, so superseded workers cannot race a writer.
+            let pi_statuses = match &agents {
+                Ok(agents) => {
+                    let live_panes: HashSet<String> =
+                        agents.iter().map(|agent| agent.pane_id.clone()).collect();
+                    pi_status::load_and_prune(
+                        &status_dir,
+                        &live_panes,
+                        PI_STATUS_MAX_AGE,
+                        mux::backend(),
+                    )
+                }
+                Err(_) => pi_status::load_all(&status_dir, mux::backend()),
+            };
             let trigger_mtime = std::fs::metadata(&trigger_path)
                 .and_then(|m| m.modified())
                 .ok();
@@ -183,7 +188,19 @@ impl App {
         let trigger_path = persistence::config_dir().join("agent.trigger");
         std::thread::spawn(move || {
             let agents = mux::scan_agents(&session_names);
-            let pi_statuses = pi_status::load_all(&status_dir, mux::backend());
+            let pi_statuses = match &agents {
+                Ok(agents) => {
+                    let live_panes: HashSet<String> =
+                        agents.iter().map(|agent| agent.pane_id.clone()).collect();
+                    pi_status::load_and_prune(
+                        &status_dir,
+                        &live_panes,
+                        PI_STATUS_MAX_AGE,
+                        mux::backend(),
+                    )
+                }
+                Err(_) => pi_status::load_all(&status_dir, mux::backend()),
+            };
             let trigger_mtime = std::fs::metadata(&trigger_path)
                 .and_then(|m| m.modified())
                 .ok();
@@ -208,16 +225,44 @@ impl App {
                 }
                 self.active_refresh_request = None;
                 self.active_scan_request = None;
+                self.invalidate_render_models();
+
+                // Git discovery is independent from backend topology and can
+                // still be applied when session listing failed.
                 self.apply_worktree_discoveries(payload.discoveries);
-                self.state.refresh_sessions(&payload.live);
-                self.prune_marked_sessions();
-                self.topology_generation = self.topology_generation.wrapping_add(1);
-                self.apply_agent_scan(result.agents, result.pi_statuses, result.trigger_mtime);
-                self.prune_pi_statuses();
+
+                match payload.live {
+                    Ok(live) => {
+                        self.state.refresh_sessions(&live);
+                        self.prune_marked_sessions();
+                        self.topology_generation = self.topology_generation.wrapping_add(1);
+                    }
+                    Err(err) => self.notice_discovery_error(format!(
+                        "{} session refresh failed; keeping last-known sessions: {}",
+                        mux::name(),
+                        err
+                    )),
+                }
+
+                match result.agents {
+                    Ok(agents) => {
+                        self.apply_agent_scan(agents, result.pi_statuses, result.trigger_mtime);
+                    }
+                    Err(err) => self.notice_discovery_error(format!(
+                        "Agent scan failed; keeping last-known agents: {}",
+                        err
+                    )),
+                }
 
                 if let Some(sel) = self.pending_selection_restore.take() {
                     self.tree_state.select(sel);
-                    self.ensure_visible_tree_selection();
+                    self.ui_dirty = true;
+                }
+                // Missing sessions/agents resolve to None; deliberately move
+                // the actual visual selection rather than retargeting actions.
+                self.ensure_visible_tree_selection();
+                if let Some((thread_id, path)) = self.pending_worktree_select.take() {
+                    self.select_worktree_by_path(thread_id, &path);
                 }
                 self.needs_redraw = true;
                 continue;
@@ -230,27 +275,19 @@ impl App {
             if result.topology_generation != self.topology_generation {
                 continue;
             }
-            self.apply_agent_scan(result.agents, result.pi_statuses, result.trigger_mtime);
-            self.prune_pi_statuses();
+            match result.agents {
+                Ok(agents) => {
+                    self.invalidate_render_models();
+                    self.apply_agent_scan(agents, result.pi_statuses, result.trigger_mtime);
+                    self.ensure_visible_tree_selection();
+                }
+                Err(err) => self.notice_discovery_error(format!(
+                    "Agent scan failed; keeping last-known agents: {}",
+                    err
+                )),
+            }
             self.needs_redraw = true;
         }
-    }
-
-    /// Pruning is deliberately main-thread-only and runs only after accepting
-    /// a current result. Superseded background workers remain read-only.
-    fn prune_pi_statuses(&self) {
-        let live_panes: HashSet<String> = self
-            .state
-            .agent_sessions
-            .iter()
-            .map(|agent| agent.pane_id.clone())
-            .collect();
-        let _ = pi_status::load_and_prune(
-            &persistence::config_dir().join("pi-status"),
-            &live_panes,
-            PI_STATUS_MAX_AGE,
-            mux::backend(),
-        );
     }
 
     /// Worktree discovery jobs for all expanded, configured threads.
@@ -312,29 +349,39 @@ impl App {
         dir.join(".git").exists().then_some(dir)
     }
 
-    /// Synchronous worktree refresh — used when the user expands/collapses
-    /// a thread and the next frame must show its worktrees. Serves cached
-    /// discoveries when fresh enough so keypresses don't shell out to git.
-    pub(super) fn refresh_worktree_sessions(&mut self) {
+    /// Keypress-safe worktree refresh. Applies fresh cached discoveries (or
+    /// stale entries as stale-while-revalidate) immediately and requests all
+    /// missing/expired Git discovery in the background. Never invokes Git on
+    /// the UI thread.
+    pub(super) fn refresh_worktree_sessions_cached(&mut self) {
         let jobs = self.expanded_worktree_jobs();
         if jobs.is_empty() {
             self.state.refresh_worktree_sessions(Vec::new());
             return;
         }
+        let mut needs_background = false;
         let discoveries = jobs
             .into_iter()
             .map(|(thread_id, repo, options)| {
-                let cached = self
-                    .worktree_cache
-                    .get(&(repo.clone(), options))
+                let entry = self.worktree_cache.get(&(repo.clone(), options));
+                let fresh = entry
                     .filter(|(at, _)| at.elapsed() < WORKTREE_CACHE_TTL)
-                    .map(|(_, wts)| wts.clone());
-                let wts = cached
-                    .unwrap_or_else(|| worktrees::discover(&repo, options).unwrap_or_default());
-                (thread_id, repo, options, wts)
+                    .map(|(_, worktrees)| worktrees.clone());
+                if fresh.is_none() {
+                    needs_background = true;
+                }
+                // Keep stale rows visible while the worker revalidates them.
+                let worktrees = fresh
+                    .or_else(|| entry.map(|(_, worktrees)| worktrees.clone()))
+                    .unwrap_or_default();
+                (thread_id, repo, options, worktrees)
             })
             .collect();
         self.apply_worktree_discoveries(discoveries);
+        self.tree_cache_dirty = true;
+        if needs_background {
+            self.request_refresh();
+        }
     }
 
     pub(super) fn find_thread_indices_by_id(
@@ -350,7 +397,7 @@ impl App {
                     .iter()
                     .position(|t| t.id == thread_id)
                     .map(|ti| (ci, ti))
-        })
+            })
     }
 
     pub(super) fn apply_worktree_discoveries(
@@ -384,17 +431,17 @@ impl App {
                 }
                 let mut session_name =
                     match self.state.make_session_name(col_idx, thread_idx, &label) {
-                    Some(name) => name,
-                    None => continue,
-                };
+                        Some(name) => name,
+                        None => continue,
+                    };
                 if used_names.contains(&session_name)
                     && let Some(head) = wt.head.as_deref()
                 {
-                        label = format!("{}-{}", label, short_head(head));
-                        if let Some(name) = self.state.make_session_name(col_idx, thread_idx, &label) {
-                            session_name = name;
-                        }
+                    label = format!("{}-{}", label, short_head(head));
+                    if let Some(name) = self.state.make_session_name(col_idx, thread_idx, &label) {
+                        session_name = name;
                     }
+                }
                 if !used_names.insert(session_name.clone()) {
                     continue;
                 }
@@ -417,6 +464,7 @@ impl App {
         }
 
         self.state.refresh_worktree_sessions(sessions);
+        self.tree_cache_dirty = true;
     }
 
     pub(super) fn is_worktree_thread_expanded(&self, col_idx: usize, thread_idx: usize) -> bool {
@@ -468,35 +516,6 @@ impl App {
             Some(last) => mtime > last,
             None => true,
         }
-    }
-
-    /// Synchronous agent scan (used by do_refresh_sessions after user actions).
-    pub(super) fn do_agent_scan(&mut self) {
-        if self.state.active_sessions.is_empty() {
-            self.state.agent_sessions.clear();
-            self.state.pi_statuses.clear();
-            return;
-        }
-
-        let session_names: Vec<String> = self
-            .state
-            .active_sessions
-            .iter()
-            .map(|s| s.tmux_session_name.clone())
-            .collect();
-        let agents = mux::scan_agents(&session_names);
-
-        let status_dir = persistence::config_dir().join("pi-status");
-        let live_panes: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
-        let pi_statuses =
-            pi_status::load_and_prune(&status_dir, &live_panes, PI_STATUS_MAX_AGE, mux::backend());
-
-        let trigger_path = persistence::config_dir().join("agent.trigger");
-        let trigger_mtime = std::fs::metadata(&trigger_path)
-            .and_then(|m| m.modified())
-            .ok();
-
-        self.apply_agent_scan(agents, pi_statuses, trigger_mtime);
     }
 
     /// Merge scanned agents into state, preserving renames/pins and applying
@@ -563,6 +582,7 @@ impl App {
         // Reapply pins persisted from the previous session, one-shot. Drained on first match attempt.
         // Pins whose pane_id is no longer live get silently dropped (pin dies with the pane).
         if !self.pending_pin_restore.is_empty() {
+            self.ui_dirty = true;
             let restore: Vec<(String, u8)> = std::mem::take(&mut self.pending_pin_restore);
             for (pane_id, slot) in restore {
                 if let Some(agent) = self
@@ -578,5 +598,7 @@ impl App {
 
         self.state.pi_statuses = pi_statuses;
         self.last_agent_trigger_mtime = trigger_mtime;
+        self.tree_cache_dirty = true;
+        self.flat_agents_cache_dirty = true;
     }
 }
