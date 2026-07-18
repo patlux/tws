@@ -27,3 +27,19 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Guard post-attach latency invariant
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path("src/app/input.rs").read_text()
+          start = source.index("pub(super) fn attach_to_session")
+          end = source.index("pub(super) fn toggle_expand_all", start)
+          body = source[start:end]
+
+          assert "self.do_refresh_sessions()" not in body, \
+              "post-attach path must never perform synchronous reconciliation"
+          assert body.index("self.draw(terminal)?") < body.index("self.request_refresh()"), \
+              "post-attach path must draw before starting reconciliation"
+          PY
