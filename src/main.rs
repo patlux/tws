@@ -40,6 +40,11 @@ enum Command {
         #[command(subcommand)]
         command: ThreadCommand,
     },
+    /// Inspect the configured collection/thread hierarchy
+    Hierarchy {
+        #[command(subcommand)]
+        command: HierarchyCommand,
+    },
     /// Create a managed session and optionally start a command in it
     Spawn(automation::SpawnArgs),
 }
@@ -54,6 +59,12 @@ enum CollectionCommand {
 enum ThreadCommand {
     /// Idempotently create a thread in an existing collection
     Ensure(automation::EnsureThreadArgs),
+}
+
+#[derive(Subcommand)]
+enum HierarchyCommand {
+    /// List collections and threads without acquiring the state lock
+    List(automation::ListHierarchyArgs),
 }
 
 fn main() -> std::io::Result<()> {
@@ -71,7 +82,9 @@ fn main() -> std::io::Result<()> {
     }
     let needs_backend = !matches!(
         &cli.command,
-        Some(Command::Collection { .. }) | Some(Command::Thread { .. })
+        Some(Command::Collection { .. })
+            | Some(Command::Thread { .. })
+            | Some(Command::Hierarchy { .. })
     );
     if needs_backend && let Err(error) = mux::ensure_available() {
         eprintln!("tws: {error}");
@@ -86,6 +99,9 @@ fn main() -> std::io::Result<()> {
         Some(Command::Thread {
             command: ThreadCommand::Ensure(args),
         }) => automation::ensure_thread(args),
+        Some(Command::Hierarchy {
+            command: HierarchyCommand::List(args),
+        }) => automation::list_hierarchy(args),
         Some(Command::Spawn(args)) => automation::spawn(args),
         None => return run_tui(),
     };

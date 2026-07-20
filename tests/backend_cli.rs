@@ -203,6 +203,52 @@ fn hierarchy_commands_do_not_require_a_mux_binary() {
 }
 
 #[test]
+fn hierarchy_list_is_read_only_json_and_works_while_locked_without_a_mux_binary() {
+    let dir = TestDir::new("hierarchy-list");
+    let config = dir.0.join("config");
+    let sessions = dir.0.join("sessions");
+    write_fake_tmux(&dir.0);
+
+    for args in [
+        vec!["collection", "ensure", "init"],
+        vec!["thread", "ensure", "--collection", "init", "etb"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tws"))
+            .args(args)
+            .env("PATH", test_path(&dir.0))
+            .env("TWS_CONFIG_DIR", &config)
+            .env("TWS_FAKE_TMUX_SESSIONS", &sessions)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::write(config.join("tws.lock"), std::process::id().to_string()).unwrap();
+    fs::remove_file(dir.0.join("tmux")).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tws"))
+        .args(["hierarchy", "list", "--json"])
+        .env("PATH", &dir.0)
+        .env("TWS_CONFIG_DIR", &config)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["collections"][0]["name"], "init");
+    assert_eq!(json["collections"][0]["hidden"], false);
+    assert_eq!(json["collections"][0]["isRoot"], false);
+    assert_eq!(json["collections"][0]["threads"][0]["name"], "etb");
+    assert_eq!(json["collections"][0]["threads"][0]["hidden"], false);
+}
+
+#[test]
 fn collection_and_thread_ensure_are_idempotent_json_commands() {
     let dir = TestDir::new("ensure");
     write_fake_tmux(&dir.0);
@@ -463,6 +509,75 @@ fn spawn_existing_session_requires_reuse_and_does_not_restart_command() {
     assert_eq!(json["createdSession"], false);
     assert_eq!(json["commandStarted"], false);
     assert_eq!(fs::read_to_string(log).unwrap(), "sentinel\n");
+}
+
+#[test]
+fn spawn_suggests_exact_existing_hierarchy_names_before_a_lock_error() {
+    let dir = TestDir::new("spawn-name-suggestions");
+    write_fake_tmux(&dir.0);
+    let config = dir.0.join("config");
+    let sessions = dir.0.join("sessions");
+
+    for args in [
+        vec!["collection", "ensure", "init"],
+        vec!["thread", "ensure", "--collection", "init", "etb"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tws"))
+            .args(args)
+            .env("PATH", test_path(&dir.0))
+            .env("TWS_CONFIG_DIR", &config)
+            .env("TWS_FAKE_TMUX_SESSIONS", &sessions)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+    fs::write(config.join("tws.lock"), std::process::id().to_string()).unwrap();
+
+    let collection_case = Command::new(env!("CARGO_BIN_EXE_tws"))
+        .args([
+            "spawn",
+            "--collection",
+            "INIT",
+            "--thread",
+            "etb",
+            "--label",
+            "review",
+            "--cwd",
+            dir.0.to_str().unwrap(),
+            "--ensure-hierarchy",
+        ])
+        .env("PATH", test_path(&dir.0))
+        .env("TWS_CONFIG_DIR", &config)
+        .env("TWS_FAKE_TMUX_SESSIONS", &sessions)
+        .output()
+        .unwrap();
+    assert!(!collection_case.status.success());
+    let collection_error = String::from_utf8_lossy(&collection_case.stderr);
+    assert!(collection_error.contains("Did you mean \"init\"?"));
+    assert!(!collection_error.contains("state is locked"));
+
+    let thread_case = Command::new(env!("CARGO_BIN_EXE_tws"))
+        .args([
+            "spawn",
+            "--collection",
+            "init",
+            "--thread",
+            "ETB",
+            "--label",
+            "review",
+            "--cwd",
+            dir.0.to_str().unwrap(),
+            "--ensure-hierarchy",
+        ])
+        .env("PATH", test_path(&dir.0))
+        .env("TWS_CONFIG_DIR", &config)
+        .env("TWS_FAKE_TMUX_SESSIONS", &sessions)
+        .output()
+        .unwrap();
+    assert!(!thread_case.status.success());
+    let thread_error = String::from_utf8_lossy(&thread_case.stderr);
+    assert!(thread_error.contains("Did you mean \"etb\"?"));
+    assert!(!thread_error.contains("state is locked"));
 }
 
 #[test]

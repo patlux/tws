@@ -9,6 +9,13 @@ use crate::core::persistence;
 use tws_mux as mux;
 
 #[derive(Args)]
+pub struct ListHierarchyArgs {
+    /// Print a machine-readable result.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args)]
 pub struct EnsureCollectionArgs {
     /// Collection name. Exact matches are reused.
     pub name: String,
@@ -70,6 +77,30 @@ pub struct SpawnArgs {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct HierarchyListResult {
+    collections: Vec<HierarchyCollectionResult>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HierarchyCollectionResult {
+    name: String,
+    id: String,
+    hidden: bool,
+    is_root: bool,
+    threads: Vec<HierarchyThreadResult>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HierarchyThreadResult {
+    name: String,
+    id: String,
+    hidden: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CollectionResult {
     created: bool,
     name: String,
@@ -103,6 +134,52 @@ struct HierarchyResult {
     thread_idx: Option<usize>,
     created_collection: bool,
     created_thread: bool,
+}
+
+pub fn list_hierarchy(args: ListHierarchyArgs) -> Result<(), String> {
+    let collections = persistence::load().map_err(|error| error.to_string())?;
+    let result = HierarchyListResult {
+        collections: collections
+            .into_iter()
+            .map(|collection| HierarchyCollectionResult {
+                name: collection.name,
+                id: collection.id.to_string(),
+                hidden: collection.hidden,
+                is_root: collection.is_root,
+                threads: collection
+                    .threads
+                    .into_iter()
+                    .map(|thread| HierarchyThreadResult {
+                        name: thread.name,
+                        id: thread.id.to_string(),
+                        hidden: thread.hidden,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    };
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&result).map_err(|error| error.to_string())?
+        );
+    } else if result.collections.is_empty() {
+        println!("No collections configured.");
+    } else {
+        for collection in &result.collections {
+            let collection_name = if collection.is_root {
+                "<root>"
+            } else {
+                &collection.name
+            };
+            println!("{collection_name}");
+            for thread in &collection.threads {
+                println!("  {}", thread.name);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn ensure_collection(args: EnsureCollectionArgs) -> Result<(), String> {
@@ -172,36 +249,27 @@ pub fn spawn(args: SpawnArgs) -> Result<(), String> {
     }
     let cwd = canonical_directory(&args.cwd)?;
 
-    let (collections, created_collection, created_thread, col_idx, thread_idx) = if args
-        .ensure_hierarchy
-    {
-        let hierarchy = ensure_hierarchy(&collection_name, Some(&thread_name), true)?;
-        let thread_idx = hierarchy
-            .thread_idx
-            .ok_or_else(|| "thread was not created".to_string())?;
-        (
-            hierarchy.collections,
-            hierarchy.created_collection,
-            hierarchy.created_thread,
-            hierarchy.col_idx,
-            thread_idx,
-        )
-    } else {
-        let collections = persistence::load().map_err(|error| error.to_string())?;
-        let col_idx = find_collection(&collections, &collection_name)?.ok_or_else(|| {
-            format!(
-                "collection {:?} does not exist; create it first or pass --ensure-hierarchy",
-                collection_name
+    let (collections, created_collection, created_thread, col_idx, thread_idx) =
+        if args.ensure_hierarchy {
+            let hierarchy = ensure_hierarchy(&collection_name, Some(&thread_name), true)?;
+            let thread_idx = hierarchy
+                .thread_idx
+                .ok_or_else(|| "thread was not created".to_string())?;
+            (
+                hierarchy.collections,
+                hierarchy.created_collection,
+                hierarchy.created_thread,
+                hierarchy.col_idx,
+                thread_idx,
             )
-        })?;
-        let thread_idx = find_thread(&collections[col_idx], &thread_name)?.ok_or_else(|| {
-                format!(
-                    "thread {:?} does not exist in collection {:?}; create it first or pass --ensure-hierarchy",
-                    thread_name, collection_name
-                )
-            })?;
-        (collections, false, false, col_idx, thread_idx)
-    };
+        } else {
+            let collections = persistence::load().map_err(|error| error.to_string())?;
+            let col_idx = find_collection(&collections, &collection_name)?
+                .ok_or_else(|| missing_collection_message(&collections, &collection_name, true))?;
+            let thread_idx = find_thread(&collections[col_idx], &thread_name)?
+                .ok_or_else(|| missing_thread_message(&collections[col_idx], &thread_name, true))?;
+            (collections, false, false, col_idx, thread_idx)
+        };
 
     let session_name = mux::regular_name(
         &collections[col_idx].name,
@@ -316,6 +384,22 @@ fn ensure_hierarchy(
         });
     }
 
+    if current_col.is_none() {
+        if let Some(existing) = find_collection_slug_match(&current, collection_name) {
+            return Err(format!(
+                "collection {:?} does not exist; names are case-sensitive and it collides with existing collection {:?} after slugification. Did you mean {:?}?",
+                collection_name, existing.name, existing.name
+            ));
+        }
+    } else if let (Some(col_idx), Some(name)) = (current_col, thread_name) {
+        if let Some(existing) = find_thread_slug_match(&current[col_idx], name) {
+            return Err(format!(
+                "thread {:?} does not exist in collection {:?}; names are case-sensitive and it collides with existing thread {:?} after slugification. Did you mean {:?}?",
+                name, current[col_idx].name, existing.name, existing.name
+            ));
+        }
+    }
+
     let _lock = acquire_mutation_lock()?;
     let mut collections = persistence::load().map_err(|error| error.to_string())?;
     let mut created_collection = false;
@@ -329,9 +413,10 @@ fn ensure_hierarchy(
             collections.len() - 1
         }
         None => {
-            return Err(format!(
-                "collection {:?} does not exist; create it first with `tws collection ensure`",
-                collection_name
+            return Err(missing_collection_message(
+                &collections,
+                collection_name,
+                false,
             ));
         }
     };
@@ -406,6 +491,72 @@ fn find_thread(collection: &Collection, name: &str) -> Result<Option<usize>, Str
             "multiple threads named {:?} exist in collection {:?}; resolve the ambiguity in the TUI first",
             name, collection.name
         )),
+    }
+}
+
+fn find_collection_slug_match<'a>(
+    collections: &'a [Collection],
+    requested: &str,
+) -> Option<&'a Collection> {
+    let slug = slugify(requested);
+    collections
+        .iter()
+        .find(|collection| !collection.is_root && slugify(&collection.name) == slug)
+}
+
+fn find_thread_slug_match<'a>(collection: &'a Collection, requested: &str) -> Option<&'a Thread> {
+    let slug = slugify(requested);
+    collection
+        .threads
+        .iter()
+        .find(|thread| slugify(&thread.name) == slug)
+}
+
+fn missing_collection_message(
+    collections: &[Collection],
+    requested: &str,
+    mention_ensure: bool,
+) -> String {
+    if let Some(existing) = find_collection_slug_match(collections, requested) {
+        return format!(
+            "collection {:?} does not exist; names are case-sensitive. Did you mean {:?}?",
+            requested, existing.name
+        );
+    }
+    if mention_ensure {
+        format!(
+            "collection {:?} does not exist; inspect `tws hierarchy list --json`, create it first, or pass --ensure-hierarchy",
+            requested
+        )
+    } else {
+        format!(
+            "collection {:?} does not exist; inspect `tws hierarchy list --json` or create it first with `tws collection ensure`",
+            requested
+        )
+    }
+}
+
+fn missing_thread_message(
+    collection: &Collection,
+    requested: &str,
+    mention_ensure: bool,
+) -> String {
+    if let Some(existing) = find_thread_slug_match(collection, requested) {
+        return format!(
+            "thread {:?} does not exist in collection {:?}; names are case-sensitive. Did you mean {:?}?",
+            requested, collection.name, existing.name
+        );
+    }
+    if mention_ensure {
+        format!(
+            "thread {:?} does not exist in collection {:?}; inspect `tws hierarchy list --json`, create it first, or pass --ensure-hierarchy",
+            requested, collection.name
+        )
+    } else {
+        format!(
+            "thread {:?} does not exist in collection {:?}; inspect `tws hierarchy list --json` or create it first",
+            requested, collection.name
+        )
     }
 }
 
