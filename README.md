@@ -192,9 +192,10 @@ tws --backend zellij import # import unmanaged Zellij sessions
 
 ### Automation CLI
 
-Agents and scripts can create hierarchy entries and durable background workers without editing `state.json` directly:
+Agents and scripts can inspect hierarchy entries, create missing ones, and launch durable background workers without editing `state.json` directly:
 
 ```sh
+tws hierarchy list --json
 tws collection ensure "Personal"
 tws thread ensure --collection "Personal" "TWS orchestration"
 
@@ -206,7 +207,7 @@ tws spawn \
   -- pi --name "TWS implementation" "Implement the feature and run tests."
 ```
 
-Use `--ensure-hierarchy` on `tws spawn` to create missing collection/thread entries in one call, and `--reuse` to return an already-running session without executing the command again. `--json` is available on every automation command for machine-readable output:
+Use `tws hierarchy list --json` before targeting an existing hierarchy; it is read-only, does not require a multiplexer binary, and remains available while the TUI holds the state lock. Names are exact and case-sensitive. Use `--ensure-hierarchy` on `tws spawn` only when creating a missing collection/thread is intentional, and `--reuse` to return an already-running session without executing the command again. `--json` is available on every automation command for machine-readable output:
 
 ```sh
 tws spawn \
